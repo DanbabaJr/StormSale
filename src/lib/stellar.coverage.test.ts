@@ -386,6 +386,72 @@ describe("balances and amount helpers", () => {
   });
 });
 
+describe("minimum reserve calculations", () => {
+  it("computes the account reserve from subentries and sponsorship", () => {
+    expect(stellar.calculateAccountReserve(0)).toBe(1);
+    expect(stellar.calculateAccountReserve(3)).toBe(2.5);
+    expect(stellar.calculateAccountReserve(3, { baseReserveXlm: 1 })).toBe(5);
+    expect(stellar.calculateAccountReserve(2, { numSponsoring: 2, numSponsored: 1 })).toBe(2.5);
+    expect(stellar.calculateAccountReserve(-2, { numSponsoring: -1, numSponsored: 9 })).toBe(-3.5);
+    expect(stellar.calculateAccountReserve(NaN)).toBe(1);
+  });
+
+  it("computes reserve breakdowns and clamps spendable balance", () => {
+    expect(stellar.calculateReserveBreakdown("10", 2)).toEqual({
+      balanceXlm: 10,
+      subentries: 2,
+      baseReserveXlm: 0.5,
+      reserveXlm: 2,
+      spendableXlm: 8,
+      numSponsoring: 0,
+      numSponsored: 0,
+    });
+
+    expect(stellar.calculateReserveBreakdown("not-a-number", 0).balanceXlm).toBe(0);
+    expect(stellar.calculateReserveBreakdown(1, 0).spendableXlm).toBe(0);
+    expect(stellar.calculateSpendableBalance(10, 2)).toBe(8);
+  });
+
+  it("loads account details from Horizon and degrades gracefully", async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse({
+        subentries: 2,
+        num_sponsoring: 1,
+        num_sponsored: 0,
+        balances: [
+          { asset_type: "native", balance: "20" },
+          { asset_type: "credit_alphanum4" },
+        ],
+      }),
+    );
+    await expect(stellar.fetchStellarAccountDetails(PUBKEY)).resolves.toMatchObject({
+      exists: true,
+      balanceXlm: 20,
+      subentries: 2,
+      numSponsoring: 1,
+      trustlineCount: 1,
+      reserveXlm: 2.5,
+      spendableXlm: 17.5,
+    });
+
+    fetchMock.mockResolvedValueOnce(jsonResponse({}, 404));
+    await expect(stellar.fetchStellarAccountDetails(PUBKEY)).resolves.toMatchObject({
+      exists: false,
+      balanceXlm: 0,
+      spendableXlm: 0,
+    });
+
+    fetchMock.mockRejectedValueOnce(new Error("offline"));
+    await expect(stellar.fetchStellarAccountDetails(PUBKEY)).resolves.toMatchObject({
+      exists: false,
+      spendableXlm: 0,
+    });
+  });
+});
+
 describe("Soroban invocation engine", () => {
   it("returns a simulated hash for the mock wallet", async () => {
     const result = await stellar.invokeSorobanMethod(PUBKEY, "noop", [], "mock");
