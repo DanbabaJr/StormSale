@@ -14,6 +14,16 @@ vi.mock("../context/WalletConnectContext", () => ({
   useWalletConnect: () => walletConnect,
 }));
 vi.mock("qrcode", () => ({ default: qr }));
+vi.mock("framer-motion", () => {
+  const MotionComponent = (props: any) => {
+    const { initial, animate, exit, transition, ...rest } = props;
+    return <div {...rest} />;
+  };
+  return {
+    motion: new Proxy({}, { get: () => MotionComponent }),
+    AnimatePresence: ({ children }: any) => <>{children}</>,
+  };
+});
 vi.mock("../lib/stellar", async (importOriginal) => {
   const actual = await importOriginal<any>();
   return { ...actual, resolveRecipient: stellarMocks.resolveRecipient };

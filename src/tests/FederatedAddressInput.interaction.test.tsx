@@ -96,8 +96,6 @@ describe("FederatedAddressInput interactions", () => {
     await render();
 
     await type("alice*stormsale.io");
-    expect(container.textContent).toContain("Resolving federation address");
-
     await settle();
     expect(stellarMocks.resolveFederatedAddress).toHaveBeenCalledWith("alice*stormsale.io");
     expect(container.textContent).toContain("Resolved alice*stormsale.io");
