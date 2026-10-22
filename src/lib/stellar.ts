@@ -16,6 +16,7 @@ import {
   Address,
   Account,
   BASE_FEE,
+  StrKey,
   xdr,
 } from "@stellar/stellar-sdk";
 import { STELLAR_CONFIG, SUPPORTED_ESCROW_ASSETS } from "../config/stellar";
@@ -417,6 +418,15 @@ export function isValidStellarAddress(address: string): boolean {
   );
 }
 
+/**
+ * Validates a Stellar ed25519 account id (`G...`) with its StrKey base32 and
+ * CRC16 checksum, rejecting contract ids and format-only lookalikes.
+ */
+export function isValidStellarAccount(address: string): boolean {
+  if (!address) return false;
+  return StrKey.isValidEd25519PublicKey(address.trim());
+}
+
 /* -------------------------------------------------------------------------- */
 /* Stellar Federation (SEP-0002) address resolution                           */
 /* -------------------------------------------------------------------------- */
@@ -488,16 +498,28 @@ export function parseFederatedAddress(value: string): ParsedFederatedAddress | n
 }
 
 /**
- * Performs a fetch with an abort-based timeout so federation lookups never hang the UI.
+ * Performs a fetch with an abort-based timeout that stays active while the
+ * response body is consumed, so federation lookups never hang the UI.
  */
-async function fetchWithTimeout(url: string, timeoutMs: number): Promise<Response> {
+async function fetchWithTimeout<T>(
+  url: string,
+  timeoutMs: number,
+  read: (response: Response) => Promise<T>,
+): Promise<{ response: Response; body: T }> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
-    return await fetch(url, {
+    const response = await fetch(url, {
       signal: controller.signal,
       headers: { Accept: "application/json, text/plain, */*" },
     });
+    const body = await read(response);
+    return { response, body };
+  } catch (error) {
+    if (error instanceof Error && error.name === "AbortError") {
+      throw new Error(`Federation request timed out after ${timeoutMs} ms`);
+    }
+    throw error;
   } finally {
     clearTimeout(timer);
   }
@@ -512,12 +534,11 @@ export async function discoverFederationServer(
   timeoutMs: number = STELLAR_CONFIG.federationTimeoutMs,
 ): Promise<string> {
   const tomlUrl = `https://${domain}/.well-known/stellar.toml`;
-  const response = await fetchWithTimeout(tomlUrl, timeoutMs);
+  const { response, body: toml } = await fetchWithTimeout(tomlUrl, timeoutMs, (res) => res.text());
   if (!response.ok) {
     throw new Error(`Could not load stellar.toml for ${domain} (HTTP ${response.status})`);
   }
 
-  const toml = await response.text();
   const match = toml.match(FEDERATION_SERVER_TOML_PATTERN);
   const server = match?.[1]?.trim();
   if (!server) {
@@ -556,20 +577,23 @@ export async function resolveFederatedAddress(
   url.searchParams.set("q", `${parsed.username}*${parsed.domain}`);
   url.searchParams.set("type", "name");
 
-  const response = await fetchWithTimeout(url.toString(), timeoutMs);
+  const { response, body: data } = await fetchWithTimeout(
+    url.toString(),
+    timeoutMs,
+    async (res) =>
+      (await res.json().catch(() => null)) as {
+        stellar_address?: string;
+        account_id?: string;
+        memo_type?: string;
+        memo?: string | number;
+      } | null,
+  );
   if (!response.ok) {
     throw new Error(`Federation server responded with HTTP ${response.status}`);
   }
 
-  const data = (await response.json().catch(() => null)) as {
-    stellar_address?: string;
-    account_id?: string;
-    memo_type?: string;
-    memo?: string | number;
-  } | null;
-
   const accountId = data?.account_id?.trim();
-  if (!accountId || !accountId.startsWith("G") || !isValidStellarAddress(accountId)) {
+  if (!accountId || !isValidStellarAccount(accountId)) {
     throw new Error("Federation server did not return a valid ed25519 account id");
   }
 
@@ -596,7 +620,7 @@ export async function resolveRecipient(
     return { status: "invalid", error: "Enter a Stellar public key or federation address." };
   }
 
-  if (isValidStellarAddress(value)) {
+  if (isValidStellarAccount(value)) {
     return { status: "raw", address: value };
   }
 

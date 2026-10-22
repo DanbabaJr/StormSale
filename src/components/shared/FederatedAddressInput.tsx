@@ -5,10 +5,10 @@ import { cn } from "../../lib/utils";
 import {
   formatStellarAddress,
   isFederatedAddress,
-  isValidStellarAddress,
+  isValidStellarAccount,
   resolveFederatedAddress,
 } from "../../lib/stellar";
-import type { RecipientResolution } from "../../lib/stellar";
+import type { FederatedAddressRecord, RecipientResolution } from "../../lib/stellar";
 
 export interface FederatedAddressInputProps {
   id?: string;
@@ -32,7 +32,7 @@ export interface FederatedAddressInputProps {
 
 const INVALID_MESSAGE = "Enter a valid G... public key or name*domain.com federation address.";
 
-type FederationOutcome =
+export type FederationOutcome =
   | {
       key: string;
       status: "federated";
@@ -43,7 +43,7 @@ type FederationOutcome =
     }
   | { key: string; status: "unresolved"; message: string };
 
-type DisplayState =
+export type DisplayState =
   | { status: "idle" }
   | { status: "resolving" }
   | { status: "raw"; address: string }
@@ -56,6 +56,74 @@ type DisplayState =
     }
   | { status: "unresolved"; message: string }
   | { status: "invalid"; message: string };
+
+/**
+ * Derives what the input should display from the current text and the latest
+ * lookup outcome. An outcome whose key does not match the current text is
+ * stale (the field was retyped), so it is ignored and the state stays
+ * `resolving` until the new lookup settles.
+ */
+export function deriveDisplayState(
+  value: string,
+  outcome: FederationOutcome | null,
+): DisplayState {
+  const trimmed = value.trim();
+  if (!trimmed) return { status: "idle" };
+  if (isValidStellarAccount(trimmed)) return { status: "raw", address: trimmed };
+  if (!isFederatedAddress(trimmed)) return { status: "invalid", message: INVALID_MESSAGE };
+  if (outcome?.key !== trimmed) return { status: "resolving" };
+  if (outcome.status === "federated") {
+    return {
+      status: "federated",
+      address: outcome.address,
+      federatedAddress: outcome.federatedAddress,
+      memoType: outcome.memoType,
+      memo: outcome.memo,
+    };
+  }
+  return { status: "unresolved", message: outcome.message };
+}
+
+/**
+ * Schedules a debounced federation lookup. The returned function cancels the
+ * pending timer and ignores any in-flight result, so retyping can never apply
+ * a stale outcome to the current input.
+ */
+export function scheduleFederationLookup(
+  key: string,
+  resolve: (address: string) => Promise<FederatedAddressRecord>,
+  onResult: (outcome: FederationOutcome) => void,
+  debounceMs: number,
+): () => void {
+  let cancelled = false;
+
+  const timer = setTimeout(async () => {
+    try {
+      const record = await resolve(key);
+      if (cancelled) return;
+      onResult({
+        key,
+        status: "federated",
+        address: record.accountId,
+        federatedAddress: record.federatedAddress,
+        memoType: record.memoType,
+        memo: record.memo,
+      });
+    } catch (error) {
+      if (cancelled) return;
+      onResult({
+        key,
+        status: "unresolved",
+        message: (error as Error)?.message || "Federation lookup failed.",
+      });
+    }
+  }, debounceMs);
+
+  return () => {
+    cancelled = true;
+    clearTimeout(timer);
+  };
+}
 
 /**
  * Recipient input that accepts either a raw `G...` ed25519 public key or a
@@ -82,62 +150,16 @@ export const FederatedAddressInput: React.FC<FederatedAddressInputProps> = ({
   }, [onResolved]);
 
   const trimmed = value.trim();
-  const isRaw = isValidStellarAddress(trimmed);
+  const isRaw = isValidStellarAccount(trimmed);
   const isFederationFormat = !isRaw && isFederatedAddress(trimmed);
-  const isResolving = isFederationFormat && outcome?.key !== trimmed;
 
   // Only the async federation lookup touches state; it runs off the effect body.
   useEffect(() => {
     if (!isFederationFormat) return;
-
-    let cancelled = false;
-    const timer = setTimeout(async () => {
-      try {
-        const record = await resolveFederatedAddress(trimmed);
-        if (cancelled) return;
-        setOutcome({
-          key: trimmed,
-          status: "federated",
-          address: record.accountId,
-          federatedAddress: record.federatedAddress,
-          memoType: record.memoType,
-          memo: record.memo,
-        });
-      } catch (error) {
-        if (cancelled) return;
-        setOutcome({
-          key: trimmed,
-          status: "unresolved",
-          message: (error as Error)?.message || "Federation lookup failed.",
-        });
-      }
-    }, debounceMs);
-
-    return () => {
-      cancelled = true;
-      clearTimeout(timer);
-    };
+    return scheduleFederationLookup(trimmed, resolveFederatedAddress, setOutcome, debounceMs);
   }, [trimmed, isFederationFormat, debounceMs]);
 
-  const state = useMemo<DisplayState>(() => {
-    if (!trimmed) return { status: "idle" };
-    if (isRaw) return { status: "raw", address: trimmed };
-    if (!isFederationFormat) return { status: "invalid", message: INVALID_MESSAGE };
-    if (isResolving) return { status: "resolving" };
-    if (outcome?.status === "federated") {
-      return {
-        status: "federated",
-        address: outcome.address,
-        federatedAddress: outcome.federatedAddress,
-        memoType: outcome.memoType,
-        memo: outcome.memo,
-      };
-    }
-    return {
-      status: "unresolved",
-      message: outcome?.status === "unresolved" ? outcome.message : "Federation lookup failed.",
-    };
-  }, [trimmed, isRaw, isFederationFormat, isResolving, outcome]);
+  const state = useMemo<DisplayState>(() => deriveDisplayState(value, outcome), [value, outcome]);
 
   const resolution = useMemo<RecipientResolution | null>(() => {
     switch (state.status) {
@@ -195,7 +217,10 @@ export const FederatedAddressInput: React.FC<FederatedAddressInputProps> = ({
         />
         <div className="pointer-events-none absolute right-4 top-1/2 -translate-y-1/2">
           {state.status === "resolving" && (
-            <Loader2 className="h-4 w-4 animate-spin text-indigo-500" aria-hidden="true" />
+            <Loader2
+              className="h-4 w-4 animate-spin motion-reduce:animate-none text-indigo-500"
+              aria-hidden="true"
+            />
           )}
           {(state.status === "raw" || state.status === "federated") && (
             <CheckCircle2 className="h-4 w-4 text-emerald-500" aria-hidden="true" />
@@ -209,7 +234,9 @@ export const FederatedAddressInput: React.FC<FederatedAddressInputProps> = ({
         </div>
       </div>
 
-      <FederationStatusMessage state={state} />
+      <div role="status" aria-live="polite">
+        <FederationStatusMessage state={state} />
+      </div>
     </div>
   );
 };
@@ -221,7 +248,7 @@ const FederationStatusMessage: React.FC<{ state: DisplayState }> = ({ state }) =
     case "resolving":
       return (
         <p className="text-xs font-medium text-indigo-600 dark:text-indigo-400 flex items-center gap-1.5">
-          <Loader2 className="h-3.5 w-3.5 animate-spin" />
+          <Loader2 className="h-3.5 w-3.5 animate-spin motion-reduce:animate-none" />
           Resolving federation address…
         </p>
       );

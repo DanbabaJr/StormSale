@@ -377,6 +377,7 @@ export const ConnectWalletModal: React.FC = () => {
                   animate={{ opacity: 1, height: "auto" }}
                   className="p-4 bg-slate-50 dark:bg-zinc-800/50 rounded-2xl border border-slate-200 dark:border-zinc-800 space-y-2.5"
                 >
+<<<<<<< ours
                   <label className="block text-xs font-bold text-zinc-700 dark:text-zinc-300">
                     Stellar Public Key (G...) or Federation Address
                   </label>
@@ -393,6 +394,31 @@ export const ConnectWalletModal: React.FC = () => {
                     >
                       Cancel
                     </button>
+=======
+                  {connectingType === "walletconnect" ? (
+                    <>
+                      <Loader2 className="w-4 h-4 animate-spin" />
+                      <span>Connecting...</span>
+                    </>
+                  ) : (
+                    <>
+                      <span>Open Desktop Session</span>
+                      <ArrowRight className="w-4 h-4" />
+                    </>
+                  )}
+                </button>
+              </div>
+            </div>
+          ) : (
+            /* VIEW 2: Standard Wallet List */
+            <div className="p-6 space-y-3 max-h-[60vh] overflow-y-auto">
+              {walletOptions.map((wallet) => {
+                const Icon = wallet.icon;
+                const isBusy = connectingType === wallet.id;
+
+                return (
+                  <div key={wallet.id} className="space-y-2">
+>>>>>>> theirs
                     <button
                       onClick={() => handleSelectWallet("readonly")}
                       className="px-4 py-1.5 bg-zinc-900 hover:bg-zinc-800 dark:bg-indigo-600 dark:hover:bg-indigo-500 text-white text-xs font-bold rounded-xl"
@@ -400,8 +426,56 @@ export const ConnectWalletModal: React.FC = () => {
                       Connect Watch Key
                     </button>
                   </div>
+<<<<<<< ours
                 </motion.div>
               )}
+=======
+                );
+              })}
+
+              {/* Read-Only Stellar Address Option */}
+              <div className="pt-2">
+                {!showReadOnlyInput ? (
+                  <button
+                    onClick={() => setShowReadOnlyInput(true)}
+                    className="w-full py-2.5 px-3 rounded-xl border border-dashed border-slate-300 dark:border-zinc-700 text-xs font-semibold text-zinc-600 dark:text-zinc-400 hover:text-zinc-900 dark:hover:text-white hover:border-zinc-400 dark:hover:border-zinc-600 flex items-center justify-center space-x-2 transition-colors"
+                  >
+                    <Key className="w-3.5 h-3.5 text-zinc-400" />
+                    <span>Or enter Stellar Public Key (Read-Only Watch Mode)</span>
+                  </button>
+                ) : (
+                  <motion.div
+                    initial={{ opacity: 0, height: 0 }}
+                    animate={{ opacity: 1, height: "auto" }}
+                    className="p-4 bg-slate-50 dark:bg-zinc-800/50 rounded-2xl border border-slate-200 dark:border-zinc-800 space-y-2.5"
+                  >
+                    <label className="block text-xs font-bold text-zinc-700 dark:text-zinc-300">
+                      Stellar Public Key (G...) or Federation Address
+                    </label>
+                    <FederatedAddressInput
+                      value={customKey}
+                      onChange={setCustomKey}
+                      placeholder="GXXXX... or alice*stormsale.io"
+                      inputClassName="h-auto px-3 py-2 bg-white dark:bg-zinc-900 border border-slate-200 dark:border-zinc-700 rounded-xl text-xs"
+                    />
+                    <div className="flex justify-end space-x-2">
+                      <button
+                        onClick={() => setShowReadOnlyInput(false)}
+                        className="px-3 py-1.5 text-xs text-zinc-500 hover:text-zinc-700 dark:hover:text-zinc-300"
+                      >
+                        Cancel
+                      </button>
+                      <button
+                        onClick={() => handleSelectWallet("readonly")}
+                        className="px-4 py-1.5 bg-zinc-900 hover:bg-zinc-800 dark:bg-indigo-600 dark:hover:bg-indigo-500 text-white text-xs font-bold rounded-xl"
+                      >
+                        Connect Watch Key
+                      </button>
+                    </div>
+                  </motion.div>
+                )}
+              </div>
+>>>>>>> theirs
             </div>
           </div>
 

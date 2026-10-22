@@ -1,8 +1,7 @@
 import { useState } from "react";
 import { Button } from "../../components/ui/button";
 import { Input } from "../../components/ui/input";
-import { InputGroup, InputField } from "../../components/ui/input-group";
-import { FederatedAddressInput } from "../shared/FederatedAddressInput";
+import { InputGroup, InputField } from "../../components/input-group";
 import {
   Card,
   CardContent,
@@ -13,12 +12,9 @@ import {
 import { useWeb3 } from "../../hooks/useWeb3";
 import { useNotification } from "../../context/NotificationContext";
 import { wrapAESKey, getPublicKeyForAddress } from "../../lib/crypto";
-<<<<<<< HEAD
 import { grantAccessSchema, getFieldErrors } from "../../lib/validation";
-=======
 import { resolveRecipient } from "../../lib/stellar";
 import type { RecipientResolution } from "../../lib/stellar";
->>>>>>> 3adadca (feat(web3): resolve Stellar federation addresses for user profiles)
 import { Eye, Shield, UserCheck } from "lucide-react";
 
 export const GrantAccessForm = () => {
@@ -46,9 +42,8 @@ export const GrantAccessForm = () => {
       return;
     }
 
-<<<<<<< HEAD
     const { data } = result;
-=======
+
     // Never grant access from an unresolved federation string: resolve on demand
     // if the field is still mid-lookup, otherwise use the cached resolution.
     const resolution = auditorResolution ?? (await resolveRecipient(auditorAddress));
@@ -63,7 +58,6 @@ export const GrantAccessForm = () => {
     }
     const recipientAddress = resolution.address;
 
->>>>>>> 3adadca (feat(web3): resolve Stellar federation addresses for user profiles)
     setIsLoading(true);
     try {
       const campaignContract = getCampaignContract(data.campaignAddress);
@@ -74,11 +68,7 @@ export const GrantAccessForm = () => {
         message: "Setting up auditor permissions...",
       });
 
-<<<<<<< HEAD
-      const auditorPublicKey = await getPublicKeyForAddress(data.auditorAddress);
-=======
       const auditorPublicKey = await getPublicKeyForAddress(recipientAddress);
->>>>>>> 3adadca (feat(web3): resolve Stellar federation addresses for user profiles)
       const auditorWrappedKey = await wrapAESKey({} as CryptoKey, auditorPublicKey);
 
       showNotification({
@@ -88,13 +78,8 @@ export const GrantAccessForm = () => {
       });
 
       const tx = await campaignContract.grantAuditAccess(
-<<<<<<< HEAD
         data.saleId,
-        data.auditorAddress,
-=======
-        saleId,
         recipientAddress,
->>>>>>> 3adadca (feat(web3): resolve Stellar federation addresses for user profiles)
         auditorWrappedKey,
       );
 
@@ -161,7 +146,10 @@ export const GrantAccessForm = () => {
               >
                 <Input
                   value={campaignAddress}
-                  onChange={(e) => { setCampaignAddress(e.target.value); clearError("campaignAddress"); }}
+                  onChange={(e) => {
+                    setCampaignAddress(e.target.value);
+                    clearError("campaignAddress");
+                  }}
                   placeholder="CCAMPAIGN... (56-char Soroban Contract Address)"
                   variant={errors.campaignAddress ? "error" : "default"}
                   className="h-12 border-slate-200 dark:border-zinc-800 focus:ring-indigo-600 dark:focus:ring-indigo-500 rounded-xl bg-slate-50 dark:bg-zinc-950 font-mono"
@@ -179,7 +167,10 @@ export const GrantAccessForm = () => {
                     type="number"
                     min="1"
                     value={saleId}
-                    onChange={(e) => { setSaleId(e.target.value); clearError("saleId"); }}
+                    onChange={(e) => {
+                      setSaleId(e.target.value);
+                      clearError("saleId");
+                    }}
                     placeholder="e.g., 123"
                     variant={errors.saleId ? "error" : "default"}
                     className="h-12 border-slate-200 dark:border-zinc-800 focus:ring-indigo-600 dark:focus:ring-indigo-500 rounded-xl bg-slate-50 dark:bg-zinc-950"
@@ -188,27 +179,20 @@ export const GrantAccessForm = () => {
 
                 <InputField
                   label="Auditor Address"
-<<<<<<< HEAD
-                  description="Stellar public key of the auditor (G…)"
-                  error={errors.auditorAddress}
-=======
                   description="Public key or federation address (e.g. auditor*stormsale.io)"
->>>>>>> 3adadca (feat(web3): resolve Stellar federation addresses for user profiles)
+                  error={errors.auditorAddress}
                   required
                 >
                   <FederatedAddressInput
                     value={auditorAddress}
-<<<<<<< HEAD
-                    onChange={(e) => { setAuditorAddress(e.target.value); clearError("auditorAddress"); }}
-                    placeholder="GAUDITOR... (56-char Stellar Public Key)"
-                    variant={errors.auditorAddress ? "error" : "default"}
-                    className="h-12 border-slate-200 dark:border-zinc-800 focus:ring-indigo-600 dark:focus:ring-indigo-500 rounded-xl bg-slate-50 dark:bg-zinc-950 font-mono"
-=======
-                    onChange={setAuditorAddress}
+                    onChange={(value) => {
+                      setAuditorAddress(value);
+                      clearError("auditorAddress");
+                    }}
                     onResolved={setAuditorResolution}
                     placeholder="GAUDITOR... or auditor*stormsale.io"
                     required
->>>>>>> 3adadca (feat(web3): resolve Stellar federation addresses for user profiles)
+                    inputClassName="h-12 border-slate-200 dark:border-zinc-800 focus:ring-indigo-600 dark:focus:ring-indigo-500 rounded-xl bg-slate-50 dark:bg-zinc-950 font-mono"
                   />
                 </InputField>
               </div>

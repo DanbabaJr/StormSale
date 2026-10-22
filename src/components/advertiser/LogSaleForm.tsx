@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { Button } from "../../components/ui/button";
 import { Input } from "../../components/ui/input";
-import { InputGroup, InputField } from "../../components/ui/input-group";
+import { InputGroup, InputField } from "../../components/input-group";
 import { FederatedAddressInput } from "../shared/FederatedAddressInput";
 import {
   Card,
@@ -18,9 +18,10 @@ import {
   wrapAESKey,
   getPublicKeyForAddress,
 } from "../../lib/crypto";
-import { triggerConversionPostback } from "../../lib/webhookEngine";
 import { resolveRecipient } from "../../lib/stellar";
 import type { RecipientResolution } from "../../lib/stellar";
+import { logSaleSchema, getFieldErrors } from "../../lib/validation";
+import { dispatchWebhookEvent, triggerConversionPostback } from "../../lib/webhookEngine";
 import { Shield, Zap, Users, FileKey } from "lucide-react";
 
 export const LogSaleForm = () => {
@@ -30,16 +31,36 @@ export const LogSaleForm = () => {
   const [campaignAddress, setCampaignAddress] = useState("");
   const [customerData, setCustomerData] = useState("");
   const [isLoading, setIsLoading] = useState(false);
+  const [errors, setErrors] = useState<Record<string, string>>({});
+
   const { getCampaignContract, userAddress } = useWeb3();
   const { showNotification } = useNotification();
 
-  const handleLogSale = async (e: React.FormEvent) => {
+  const clearError = (field: string) => {
+    setErrors((prev) => ({ ...prev, [field]: "" }));
+  };
+
+  const handleLogSale = async (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
-    if (!affiliateAddress || !saleAmount || !campaignAddress) {
+    setErrors({});
+
+    const result = logSaleSchema.safeParse({
+      campaignAddress,
+      affiliateAddress,
+      saleAmount,
+      customerData: customerData || undefined,
+    });
+
+    if (!result.success) {
+      setErrors(getFieldErrors(result.error));
+      return;
+    }
+
+    if (!userAddress) {
       showNotification({
-        type: "warning",
-        title: "Missing Information",
-        message: "Please fill all required fields",
+        type: "error",
+        title: "Wallet Not Connected",
+        message: "Connect your wallet before logging a sale.",
       });
       return;
     }
@@ -58,9 +79,27 @@ export const LogSaleForm = () => {
     }
     const recipientAddress = resolution.address;
 
+    const { data } = result;
+
+    // Private campaigns only credit approved affiliates. Checked before any
+    // encryption work so the advertiser sees why. The id is already validated
+    // as a u32 by the schema, so this cannot throw on an out-of-range value.
+    if (/^\d+$/.test(data.campaignAddress)) {
+      const access = getAffiliateAccess(data.campaignAddress, data.affiliateAddress);
+      if (!access.allowed) {
+        showNotification({
+          type: "error",
+          title: "Affiliate Not Approved",
+          message: access.reason,
+        });
+        return;
+      }
+    }
+
     setIsLoading(true);
+
     try {
-      const campaignContract = getCampaignContract(campaignAddress);
+      const campaignContract = getCampaignContract(data.campaignAddress);
 
       showNotification({
         type: "info",
@@ -71,7 +110,7 @@ export const LogSaleForm = () => {
       const aesKey = await generateAESKey();
 
       const payload = {
-        customer: customerData || "Anonymous Customer",
+        customer: data.customerData || "Anonymous Customer",
         saleId: `SALE_${Date.now()}`,
         product: "Digital Product",
         timestamp: new Date().toISOString(),
@@ -79,7 +118,7 @@ export const LogSaleForm = () => {
       };
       const encryptedPayload = await encryptPayload(payload, aesKey);
 
-      const advertiserPublicKey = await getPublicKeyForAddress(userAddress!);
+      const advertiserPublicKey = await getPublicKeyForAddress(userAddress);
       const affiliatePublicKey = await getPublicKeyForAddress(recipientAddress);
 
       const advertiserWrappedKey = await wrapAESKey(aesKey, advertiserPublicKey);
@@ -91,54 +130,26 @@ export const LogSaleForm = () => {
         message: "Logging encrypted sale...",
       });
 
-      const tx = await campaignContract.logEncryptedSale(
-        recipientAddress,
-        saleAmount,
-        encryptedPayload,
+      const tx = await campaignContract.logSale(
         advertiserWrappedKey,
         affiliateWrappedKey,
+        encryptedPayload,
       );
 
       await tx.wait();
 
-      // Automated Conversion Postback Dispatch
-      try {
-        const postbackTxHash = tx?.hash || tx?.id || "PENDING_CONFIRMED_LEDGER_TX";
-
-        const postbacks = await triggerConversionPostback({
-          saleId: payload.saleId,
-          campaignAddress,
-          affiliateAddress: recipientAddress,
-          advertiserAddress: userAddress || "GADVERTISER_DEFAULT_TESTNET",
-          saleAmount,
-          currency: "XLM",
-          stellarTxHash: postbackTxHash,
-          ledgerTimestamp: new Date().toISOString(),
-          customerRef: customerData ? `REF_${payload.saleId.slice(-8)}` : "Anonymous Customer",
-          status: "CONFIRMED_ON_LEDGER",
-        });
-
-        if (postbacks.length > 0) {
-          showNotification({
-            type: "info",
-            title: "Webhooks Dispatched",
-            message: `Automated postback queued for ${postbacks.length} active endpoint(s).`,
-          });
-        }
-      } catch (webhookErr) {
-        console.warn("Conversion postback warning:", webhookErr);
-        showNotification({
-          type: "warning",
-          title: "Postback Notice",
-          message:
-            "Sale confirmed on-chain, but automated webhook dispatch encountered an issue. You can review or retry from the Webhook Manager tab.",
-        });
-      }
+      await triggerConversionPostback(data.campaignAddress, recipientAddress, data.saleAmount);
+      await dispatchWebhookEvent("conversion", {
+        campaign: data.campaignAddress,
+        affiliate: recipientAddress,
+        amount: data.saleAmount,
+        timestamp: new Date().toISOString(),
+      });
 
       showNotification({
         type: "success",
-        title: "Sale Logged Successfully!",
-        message: "Encrypted sale data has been recorded on-chain",
+        title: "Sale Logged",
+        message: "Encrypted sale recorded on-chain",
       });
 
       setAffiliateAddress("");
@@ -150,7 +161,7 @@ export const LogSaleForm = () => {
       console.error("Error logging sale:", error);
       showNotification({
         type: "error",
-        title: "Logging Failed",
+        title: "Sale Log Failed",
         message: error.message || "Failed to log sale",
       });
     } finally {
@@ -162,10 +173,10 @@ export const LogSaleForm = () => {
     <div className="space-y-6">
       <div>
         <h2 className="text-3xl font-extrabold text-zinc-900 dark:text-white tracking-tight">
-          Log Encrypted Sale
+          Log a Sale
         </h2>
         <p className="text-zinc-500 dark:text-zinc-400 mt-2 font-medium">
-          Record a new sale with military-grade encryption and commission escrow
+          Record a converted sale against your campaign and affiliate.
         </p>
       </div>
 
@@ -173,130 +184,130 @@ export const LogSaleForm = () => {
         <CardHeader className="pb-6 pt-8 px-8">
           <div className="flex items-center space-x-4">
             <div className="w-14 h-14 bg-zinc-900 dark:bg-indigo-600 rounded-xl flex items-center justify-center shadow-md">
-              <Shield className="w-7 h-7 text-white" />
+              <Zap className="w-7 h-7 text-white" />
             </div>
             <div>
               <CardTitle className="text-2xl font-bold text-zinc-900 dark:text-white">
-                Secure Sale Logging
+                Conversion Tracking
               </CardTitle>
               <CardDescription className="text-zinc-500 dark:text-zinc-400 mt-1">
-                All data is encrypted before being stored on-chain
+                Log affiliate-sourced sales and distribute escrowed payouts.
               </CardDescription>
             </div>
           </div>
         </CardHeader>
 
         <CardContent className="px-8 pb-8">
-          <form onSubmit={handleLogSale}>
+          <form onSubmit={handleLogSale} noValidate>
             <InputGroup className="space-y-8">
               <InputField
                 label="Campaign Address"
-                description="The campaign contract where this sale belongs"
+                description="Soroban contract address (C…) containing the sale"
+                error={errors.campaignAddress}
                 required
               >
                 <Input
                   value={campaignAddress}
-                  onChange={(e) => setCampaignAddress(e.target.value)}
-                  placeholder="e.g. Campaign #1 or Soroban Contract ID"
-                  className="h-12 border-slate-200 dark:border-zinc-800 focus:ring-indigo-600 dark:focus:ring-indigo-500 rounded-xl bg-slate-50 dark:bg-zinc-950"
-                  required
+                  onChange={(e) => {
+                    setCampaignAddress(e.target.value);
+                    clearError("campaignAddress");
+                  }}
+                  placeholder="CCAMPAIGN... (56-char Soroban Contract Address)"
+                  variant={errors.campaignAddress ? "error" : "default"}
+                  className="h-12 border-slate-200 dark:border-zinc-800 focus:ring-indigo-600 dark:focus:ring-indigo-500 rounded-xl bg-slate-50 dark:bg-zinc-950 font-mono"
                 />
               </InputField>
 
               <div className="grid md:grid-cols-2 gap-6">
                 <InputField
                   label="Affiliate Address"
-                  description="Public key or federation address (e.g. alice*stormsale.io)"
+                  description="Public key or federation address (e.g. affiliate*stormsale.io)"
+                  error={errors.affiliateAddress}
                   required
                 >
                   <FederatedAddressInput
                     value={affiliateAddress}
-                    onChange={setAffiliateAddress}
+                    onChange={(value) => {
+                      setAffiliateAddress(value);
+                      clearError("affiliateAddress");
+                    }}
                     onResolved={setAffiliateResolution}
-                    placeholder="GAFFILIATE... or alice*stormsale.io"
+                    placeholder="GAFFILIATE... or affiliate*stormsale.io"
                     required
+                    inputClassName="h-12 border-slate-200 dark:border-zinc-800 focus:ring-indigo-600 dark:focus:ring-indigo-500 rounded-xl bg-slate-50 dark:bg-zinc-950 font-mono"
                   />
                 </InputField>
 
                 <InputField
-                  label="Sale Amount (XLM)"
-                  description="Total sale amount in XLM tokens"
+                  label="Sale Amount"
+                  description="Amount paid out to the affiliate from the campaign escrow"
+                  error={errors.saleAmount}
                   required
                 >
-                  <div className="relative">
-                    <Input
-                      type="number"
-                      step="0.001"
-                      min="0"
-                      value={saleAmount}
-                      onChange={(e) => setSaleAmount(e.target.value)}
-                      placeholder="e.g., 100.50"
-                      className="h-12 border-slate-200 dark:border-zinc-800 focus:ring-indigo-600 dark:focus:ring-indigo-500 rounded-xl bg-slate-50 dark:bg-zinc-950"
-                      required
-                    />
-                    <div className="absolute right-4 top-1/2 transform -translate-y-1/2 text-zinc-400 font-medium">
-                      XLM
-                    </div>
-                  </div>
+                  <Input
+                    type="number"
+                    min="0"
+                    step="0.01"
+                    value={saleAmount}
+                    onChange={(e) => {
+                      setSaleAmount(e.target.value);
+                      clearError("saleAmount");
+                    }}
+                    placeholder="e.g., 100.50"
+                    variant={errors.saleAmount ? "error" : "default"}
+                    className="h-12 border-slate-200 dark:border-zinc-800 focus:ring-indigo-600 dark:focus:ring-indigo-500 rounded-xl bg-slate-50 dark:bg-zinc-950"
+                  />
                 </InputField>
               </div>
 
               <InputField
-                label="Customer Information"
-                description="Optional customer data (will be encrypted)"
+                label="Customer Data"
+                description="Encrypted customer information tied to the sale"
+                error={errors.customerData}
               >
                 <Input
                   value={customerData}
-                  onChange={(e) => setCustomerData(e.target.value)}
-                  placeholder="Customer name, email, or reference ID"
+                  onChange={(e) => {
+                    setCustomerData(e.target.value);
+                    clearError("customerData");
+                  }}
+                  placeholder="Optional customer details"
+                  variant={errors.customerData ? "error" : "default"}
                   className="h-12 border-slate-200 dark:border-zinc-800 focus:ring-indigo-600 dark:focus:ring-indigo-500 rounded-xl bg-slate-50 dark:bg-zinc-950"
                 />
               </InputField>
 
-              {/* Encryption Flow Visualization */}
-              <div className="bg-slate-50 dark:bg-zinc-950/50 p-6 rounded-2xl border border-slate-100 dark:border-zinc-800/50">
-                <h4 className="font-bold text-zinc-900 dark:text-white uppercase tracking-wider text-xs mb-6 flex items-center">
-                  <FileKey className="w-4 h-4 mr-2 text-indigo-500" />
-                  Encryption Security Flow
-                </h4>
-                <div className="grid grid-cols-2 md:grid-cols-5 gap-6 text-center">
-                  {[
-                    { step: "1", label: "Generate AES Key", icon: Zap },
-                    { step: "2", label: "Encrypt Data", icon: Shield },
-                    { step: "3", label: "Get Public Keys", icon: Users },
-                    { step: "4", label: "Wrap Keys", icon: FileKey },
-                    { step: "5", label: "Store On-Chain", icon: Shield },
-                  ].map((item, index) => {
-                    const IconComponent = item.icon;
-                    return (
-                      <div key={index} className="flex flex-col items-center">
-                        <div className="w-10 h-10 bg-indigo-100 dark:bg-indigo-500/20 text-indigo-700 dark:text-indigo-400 rounded-full flex items-center justify-center text-sm font-bold mb-3 border border-indigo-200 dark:border-indigo-500/30">
-                          {item.step}
-                        </div>
-                        <IconComponent className="w-5 h-5 text-zinc-400 dark:text-zinc-500 mb-2" />
-                        <div className="text-xs font-semibold text-zinc-600 dark:text-zinc-400">
-                          {item.label}
-                        </div>
-                      </div>
-                    );
-                  })}
+              {/* Security Notice */}
+              <div className="bg-indigo-50 dark:bg-indigo-500/10 p-6 rounded-2xl border border-indigo-100 dark:border-indigo-500/20">
+                <div className="flex items-start space-x-4">
+                  <Shield className="w-6 h-6 text-indigo-600 dark:text-indigo-400 mt-1" />
+                  <div>
+                    <h4 className="font-bold text-indigo-900 dark:text-indigo-300">
+                      Encryption Notice
+                    </h4>
+                    <p className="text-sm font-medium text-indigo-700 dark:text-indigo-400 mt-2 leading-relaxed">
+                      Sale data is encrypted client-side and stored on-chain only in wrapped form.
+                      Only the advertiser and the authorized affiliate can decrypt it.
+                    </p>
+                  </div>
                 </div>
               </div>
 
               <Button
                 type="submit"
-                disabled={isLoading}
+                loading={isLoading}
+                cooldown
                 className="w-full h-14 bg-zinc-900 hover:bg-zinc-800 dark:bg-indigo-600 dark:hover:bg-indigo-500 text-white text-lg font-bold shadow-lg rounded-xl transition-all"
               >
                 {isLoading ? (
                   <div className="flex items-center space-x-3">
                     <div className="w-5 h-5 border-2 border-white/30 border-t-white rounded-full animate-spin" />
-                    <span>Logging Encrypted Sale...</span>
+                    <span>Logging Sale...</span>
                   </div>
                 ) : (
                   <div className="flex items-center space-x-2">
-                    <Shield className="w-5 h-5" />
-                    <span>Log Encrypted Sale</span>
+                    <FileKey className="w-5 h-5" />
+                    <span>Log Sale</span>
                   </div>
                 )}
               </Button>
