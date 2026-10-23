@@ -1116,6 +1116,11 @@ export const CreateCampaignForm = () => {
                           : undefined
                       }
                       className="w-full h-14 bg-indigo-600 hover:bg-indigo-700 text-white text-base md:text-lg font-bold shadow-lg shadow-indigo-600/20 rounded-xl transition-all disabled:opacity-50 disabled:cursor-not-allowed"
+<<<<<<< ours
+>>>>>>> theirs
+=======
+                      loading={isExecuting}
+                      cooldown
 >>>>>>> theirs
                     >
                       {flowStep === "approving" ? (
@@ -1190,6 +1195,11 @@ export const CreateCampaignForm = () => {
                         : undefined
                     }
                     className="w-full h-14 bg-zinc-900 hover:bg-zinc-800 dark:bg-indigo-600 dark:hover:bg-indigo-500 text-white text-lg font-bold shadow-lg rounded-xl transition-all disabled:opacity-50 disabled:cursor-not-allowed"
+<<<<<<< ours
+>>>>>>> theirs
+=======
+                    loading={isExecuting}
+                    cooldown
 >>>>>>> theirs
                   >
                     {flowStep === "creating" ? (

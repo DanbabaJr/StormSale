@@ -18,7 +18,10 @@ const web3 = vi.hoisted(() => ({
   approveTokenAllowance: vi.fn(),
   getCampaignContract: vi.fn(),
   tokenAllowance: 0,
-  assetBalances: { XLM: "100.00", USDC: "50.00", EURC: "0.00" },
+  // Native balance must clear the 100 XLM budget plus the minimum reserve for
+  // the reserve-aware submit guard to allow the campaign.
+  xlmBalance: "500.00",
+  assetBalances: { XLM: "500.00", USDC: "50.00", EURC: "0.00" },
 }));
 const notify = vi.hoisted(() => vi.fn());
 const crypto = vi.hoisted(() => ({
@@ -75,6 +78,31 @@ vi.mock("../lib/stellar", () => ({
       error: "Enter a valid G... public key or name*domain.com federation address.",
     };
   }),
+  // useAccountReserve needs the reserve math; Horizon is unavailable here, so
+  // the hook falls back to the wallet balance exposed by the mocked context.
+  calculateReserveBreakdown: (balanceXlm: number | string, subentries: number) => {
+    const parsed = typeof balanceXlm === "number" ? balanceXlm : parseFloat(balanceXlm);
+    const balance = Number.isFinite(parsed) ? parsed : 0;
+    const baseReserveXlm = 0.5;
+    const reserveXlm = (2 + Math.max(0, subentries)) * baseReserveXlm;
+    return {
+      balanceXlm: balance,
+      subentries,
+      baseReserveXlm,
+      reserveXlm,
+      spendableXlm: Math.max(0, balance - reserveXlm),
+      numSponsoring: 0,
+      numSponsored: 0,
+    };
+  },
+  fetchStellarAccountDetails: vi.fn(async () => ({
+    exists: false,
+    balanceXlm: 0,
+    subentries: 0,
+    trustlineCount: 0,
+    numSponsoring: 0,
+    numSponsored: 0,
+  })),
 }));
 vi.mock("../lib/crypto", () => crypto);
 vi.mock("../lib/webhookEngine", () => webhooks);
