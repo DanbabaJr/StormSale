@@ -529,9 +529,11 @@ describe("contract call wrappers", () => {
     const previousEnv = process.env.NODE_ENV;
     process.env.NODE_ENV = "production";
     try {
-      server.simulateTransaction.mockRejectedValueOnce(new Error("rpc down"));
+      // Every failover attempt must fail for the catch-all fallback to run.
+      server.simulateTransaction.mockRejectedValue(new Error("rpc down"));
       await expect(stellar.getTokenAllowanceQuery(PUBKEY, SPENDER)).resolves.toBe(12.5);
 
+      server.simulateTransaction.mockImplementation(async () => ({}));
       server.simulateTransaction.mockResolvedValueOnce({
         result: { retval: nativeToScVal(5_000_000n, { type: "i128" }) },
       });

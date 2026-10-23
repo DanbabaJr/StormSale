@@ -78,7 +78,10 @@ async function render() {
 }
 
 async function fill(affiliate = AFFILIATE, amount = "100.5") {
-  setInput(inputByPlaceholder("CCAMPAIGN... (56-char Soroban Contract Address)"), CAMPAIGN);
+  setInput(
+    inputByPlaceholder("Campaign ID (e.g. 1) or CCAMPAIGN... contract address"),
+    CAMPAIGN,
+  );
   setInput(inputByPlaceholder("GAFFILIATE... or alice*stormsale.io"), affiliate);
   setInput(inputByPlaceholder("e.g., 100.50"), amount);
 }
