@@ -47,6 +47,9 @@ function makeReserve(overrides: Record<string, unknown> = {}) {
     isLoading: false,
     isReady: true,
     isFallback: false,
+    isUnavailable: false,
+    sellingLiabilitiesXlm: 0,
+    refresh: vi.fn().mockResolvedValue(undefined),
     ...overrides,
   };
 }
@@ -210,6 +213,8 @@ describe("CreateCampaignForm coverage", () => {
       "XLM",
     );
     expect(container.textContent).toContain("Campaign #7 Successfully Initialized");
+    // The escrow deposit changed the balance, so the reserve snapshot is reloaded.
+    expect(reserve.current.refresh).toHaveBeenCalledTimes(1);
 
     await click(buttonByText("Dismiss"));
     expect(container.textContent).not.toContain("Campaign #7 Successfully Initialized");
@@ -294,5 +299,52 @@ describe("CreateCampaignForm coverage", () => {
 
     setInput(inputByPlaceholder("e.g., 1000"), "10.0000000");
     expect(container.textContent).not.toContain("Amount exceeds your spendable balance");
+  });
+
+  it("rejects exponent notation instead of bypassing the spendable check", async () => {
+    await renderForm();
+    await fillValidForm("1e3");
+    // The amount is not treated as a valid budget, so it never reaches the chain.
+    expect(container.textContent).not.toContain("Approve & Launch XLM Campaign");
+    await submitForm();
+
+    expect(notification.showNotification).toHaveBeenCalledWith(
+      expect.objectContaining({ title: "Validation Error" }),
+    );
+    expect(container.textContent).toContain("without exponent notation");
+    expect(web3.current.approveTokenAllowance).not.toHaveBeenCalled();
+    expect(web3.current.createCampaignOnChain).not.toHaveBeenCalled();
+  });
+
+  it("clears a stale budget error and finished flow state when Max is used", async () => {
+    await renderForm();
+    await fillValidForm("1e3");
+    await submitForm();
+    expect(container.textContent).toContain("without exponent notation");
+
+    await click(buttonByText("Max"));
+    expect(inputByPlaceholder("e.g., 1000").value).toBe("10");
+    expect(container.textContent).not.toContain("without exponent notation");
+
+    // A finished flow resets to idle when Max refills the field.
+    await submitForm();
+    expect(container.textContent).toContain("Campaign #7 Successfully Initialized");
+    web3.current.createCampaignOnChain.mockRejectedValueOnce(new Error("contract reverted"));
+    await fillValidForm("2");
+    await submitForm();
+    expect(notification.showNotification).toHaveBeenCalledWith(
+      expect.objectContaining({ title: "Failed to Create Campaign" }),
+    );
+    await click(buttonByText("Max"));
+    expect(inputByPlaceholder("e.g., 1000").value).toBe("10");
+    expect(buttonByText("Launch XLM Campaign").hasAttribute("disabled")).toBe(false);
+  });
+
+  it("disables Max when live reserve data is unavailable", async () => {
+    reserve.current = makeReserve({ isFallback: true, isUnavailable: true });
+    await renderForm();
+
+    expect(buttonByText("Max").hasAttribute("disabled")).toBe(true);
+    expect(container.textContent).toContain("Max is disabled until the account can be loaded");
   });
 });

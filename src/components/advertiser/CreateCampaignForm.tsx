@@ -13,7 +13,11 @@ import {
 import { useWeb3 } from "../../hooks/useWeb3";
 import { useAccountReserve } from "../../hooks/useAccountReserve";
 import { useNotification } from "../../context/NotificationContext";
-import { getCreateCampaignSchema, getFieldErrors } from "../../lib/validation";
+import {
+  getCreateCampaignSchema,
+  getFieldErrors,
+  isPlainDecimalAmount,
+} from "../../lib/validation";
 import { CONTRACT_ADDRESSES } from "../../config/contracts";
 import { formatStellarAddress } from "../../lib/stellar";
 import {
@@ -47,6 +51,11 @@ const formatXlm = (value: number): string =>
  * without floating point drift. Extra fractional digits are truncated.
  */
 export const toStroops = (value: string | number): bigint => {
+  // `toFixed` switches to exponent notation at 1e21; whole numbers that large
+  // are already integers, so scale them directly instead of returning 0.
+  if (typeof value === "number" && Number.isFinite(value) && value >= 1e21) {
+    return BigInt(value) * 10n ** BigInt(STROOPS_PER_XLM_DIGITS);
+  }
   const raw =
     typeof value === "number"
       ? Number.isFinite(value)
@@ -56,7 +65,9 @@ export const toStroops = (value: string | number): bigint => {
   const match = /^(\d*)(?:\.(\d*))?$/.exec(raw);
   if (!match) return 0n;
   const whole = match[1] || "0";
-  const frac = (match[2] ?? "").slice(0, STROOPS_PER_XLM_DIGITS).padEnd(STROOPS_PER_XLM_DIGITS, "0");
+  const frac = (match[2] ?? "")
+    .slice(0, STROOPS_PER_XLM_DIGITS)
+    .padEnd(STROOPS_PER_XLM_DIGITS, "0");
   return BigInt(whole) * 10n ** BigInt(STROOPS_PER_XLM_DIGITS) + BigInt(frac);
 };
 
@@ -104,8 +115,13 @@ export const CreateCampaignForm = () => {
   const parsedBudget = parseFloat(budget);
   const maxDecimals = SUPPORTED_ESCROW_ASSETS[selectedAsset]?.decimals ?? 7;
   const fracDigits = budget.includes(".") ? (budget.split(".")[1]?.length ?? 0) : 0;
+  // Only plain decimals are accepted: `parseFloat("1e3")` is 1000 while the
+  // stroop conversion cannot read exponent notation, which would otherwise let
+  // an over-budget amount slip past the spendable-balance check.
+  const isPlainBudget = isPlainDecimalAmount(budget);
   const isValidBudget = Boolean(
     budget &&
+    isPlainBudget &&
     !isNaN(parsedBudget) &&
     isFinite(parsedBudget) &&
     parsedBudget > 0 &&
@@ -126,6 +142,8 @@ export const CreateCampaignForm = () => {
     isLoading: isReserveLoading,
     isReady: isReserveReady,
     isFallback,
+    isUnavailable: isReserveUnavailable,
+    refresh: refreshReserve,
   } = useAccountReserve(userAddress, xlmBalance);
 
   // The minimum reserve only constrains XLM escrow deposits; USDC/EURC budgets
@@ -142,8 +160,16 @@ export const CreateCampaignForm = () => {
     toStroops(budget) > toStroops(spendableXlm);
   const isReserveBlocked = isReservePending || exceedsSpendable;
 
+  // Max must never offer an amount that could break the real reserve, so it is
+  // unavailable while live Horizon data is missing (subentries unknown).
+  const canUseMax = isConnected && isReserveReady && !isReserveUnavailable && spendableXlm > 0;
+
   const handleMaxBudget = () => {
-    if (!isReserveReady || spendableXlm <= 0) {
+    // Like a manual edit, Max replaces the amount, so stale errors and a
+    // finished flow state must not linger on the new value.
+    if (errors.budget) setErrors((prev) => ({ ...prev, budget: "" }));
+    if (flowStep === "success" || flowStep === "error") setFlowStep("idle");
+    if (!canUseMax) {
       setBudget("");
       return;
     }
@@ -365,6 +391,9 @@ export const CreateCampaignForm = () => {
       });
 
       setFlowStep("success");
+      // The escrow deposit just reduced the on-chain XLM balance; reload the
+      // reserve snapshot so Max and the spendable check do not use stale data.
+      void refreshReserve();
       setCommissionRate("");
       setClearingPeriod("");
       setCampaignName("");
@@ -605,7 +634,7 @@ export const CreateCampaignForm = () => {
                             variant="outline"
                             size="sm"
                             onClick={handleMaxBudget}
-                            disabled={!isConnected || !isReserveReady || spendableXlm <= 0}
+                            disabled={!canUseMax}
                             className="h-8 rounded-lg px-3 text-xs font-bold border-slate-200 dark:border-zinc-700 text-indigo-600 dark:text-indigo-400 hover:bg-indigo-50 dark:hover:bg-indigo-500/10"
                           >
                             Max
@@ -628,8 +657,8 @@ export const CreateCampaignForm = () => {
                       <p className="text-xs font-medium text-red-600 dark:text-red-400 flex items-start gap-1.5">
                         <TriangleAlert className="h-3.5 w-3.5 mt-0.5 shrink-0" />
                         <span>
-                          Amount exceeds your spendable balance of {formatXlm(spendableXlm)} XLM. The
-                          Stellar minimum reserve keeps {formatXlm(reserveXlm)} XLM locked.
+                          Amount exceeds your spendable balance of {formatXlm(spendableXlm)} XLM.
+                          The Stellar minimum reserve keeps {formatXlm(reserveXlm)} XLM locked.
                         </span>
                       </p>
                     )}
@@ -691,11 +720,20 @@ export const CreateCampaignForm = () => {
                       </p>
                     )}
 
-                    {isFallback && isReserveReady && (
-                      <p className="text-xs font-medium text-zinc-500 dark:text-zinc-400">
-                        Live reserve data is unavailable right now; using your wallet balance with
-                        the default base reserve.
+                    {isReserveUnavailable && isReserveReady ? (
+                      <p className="text-xs font-medium text-amber-600 dark:text-amber-400">
+                        Live reserve data is unavailable right now, so trustlines and offers may not
+                        be counted. Figures use your wallet balance with the default base reserve,
+                        and Max is disabled until the account can be loaded.
                       </p>
+                    ) : (
+                      isFallback &&
+                      isReserveReady && (
+                        <p className="text-xs font-medium text-zinc-500 dark:text-zinc-400">
+                          Live reserve data is unavailable right now; using your wallet balance with
+                          the default base reserve.
+                        </p>
+                      )
                     )}
                   </>
                 )}
@@ -765,7 +803,11 @@ export const CreateCampaignForm = () => {
                         : "bg-emerald-100 dark:bg-emerald-500/10 text-emerald-600 dark:text-emerald-400"
                     }`}
                   >
-                    {isPrivate ? <Lock className="w-5 h-5" aria-hidden="true" /> : <Globe className="w-5 h-5" aria-hidden="true" />}
+                    {isPrivate ? (
+                      <Lock className="w-5 h-5" aria-hidden="true" />
+                    ) : (
+                      <Globe className="w-5 h-5" aria-hidden="true" />
+                    )}
                   </div>
                   <div>
                     <p
