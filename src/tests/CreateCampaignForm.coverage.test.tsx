@@ -45,6 +45,7 @@ function makeReserve(overrides: Record<string, unknown> = {}) {
     subentries: 0,
     baseReserveXlm: 0.5,
     isLoading: false,
+    isReady: true,
     isFallback: false,
     ...overrides,
   };
@@ -271,5 +272,27 @@ describe("CreateCampaignForm coverage", () => {
     setInput(inputByPlaceholder("e.g., 1000"), "3");
 
     expect(buttonByText("Max").hasAttribute("disabled")).toBe(true);
+  });
+  it("blocks escrow and Max until the reserve lookup is ready", async () => {
+    reserve.current = makeReserve({ isReady: false, isLoading: true });
+    await renderForm();
+    await fillValidForm("5");
+
+    expect(buttonByText("Max").hasAttribute("disabled")).toBe(true);
+    await submitForm();
+
+    expect(notification.showNotification).toHaveBeenCalledWith(
+      expect.objectContaining({ title: "Checking Balance" }),
+    );
+    expect(web3.current.createCampaignOnChain).not.toHaveBeenCalled();
+  });
+
+  it("rejects a budget one stroop above the spendable balance", async () => {
+    await renderForm();
+    setInput(inputByPlaceholder("e.g., 1000"), "10.0000001");
+    expect(container.textContent).toContain("Amount exceeds your spendable balance");
+
+    setInput(inputByPlaceholder("e.g., 1000"), "10.0000000");
+    expect(container.textContent).not.toContain("Amount exceeds your spendable balance");
   });
 });

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { calculateReserveBreakdown, fetchStellarAccountDetails } from "../lib/stellar";
 import type { StellarAccountDetails } from "../lib/stellar";
 
@@ -16,6 +16,11 @@ export interface AccountReserveState {
   /** True when Horizon data was unavailable and the context balance was used. */
   isFallback: boolean;
   isLoading: boolean;
+  /**
+   * True once a Horizon lookup for the current address has settled. Callers
+   * should not trust spendable/reserve figures for validation until then.
+   */
+  isReady: boolean;
   refresh: () => Promise<void>;
 }
 
@@ -34,29 +39,45 @@ export function useAccountReserve(
   fallbackBalanceXlm: string | number = 0,
 ): AccountReserveState {
   const [details, setDetails] = useState<StellarAccountDetails | null>(null);
+  const [loadedAddress, setLoadedAddress] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(false);
+  // Monotonic request id: only the latest request for the latest address may commit.
+  const requestIdRef = useRef(0);
 
   const refresh = useCallback(async () => {
-    if (!address) return;
+    const requestId = ++requestIdRef.current;
+    if (!address) {
+      setIsLoading(false);
+      return;
+    }
     setIsLoading(true);
     try {
       const result = await fetchStellarAccountDetails(address);
+      if (requestId !== requestIdRef.current) return;
       setDetails(result);
+      setLoadedAddress(address);
     } finally {
-      setIsLoading(false);
+      if (requestId === requestIdRef.current) {
+        setIsLoading(false);
+      }
     }
   }, [address]);
 
   // Kick off the initial load off the effect body to avoid cascading renders.
+  // On address change/disconnect, invalidate any in-flight request.
   useEffect(() => {
     const timer = setTimeout(() => {
       void refresh();
     }, 0);
-    return () => clearTimeout(timer);
+    return () => {
+      clearTimeout(timer);
+      requestIdRef.current += 1;
+    };
   }, [refresh]);
 
   return useMemo<AccountReserveState>(() => {
-    const activeDetails = address ? details : null;
+    const isReady = Boolean(address) && loadedAddress === address && !isLoading;
+    const activeDetails = address && loadedAddress === address ? details : null;
     const isFallback = !activeDetails || !activeDetails.exists;
     const breakdown = calculateReserveBreakdown(
       isFallback ? toNumber(fallbackBalanceXlm) : activeDetails.balanceXlm,
@@ -79,7 +100,8 @@ export function useAccountReserve(
       exists: Boolean(activeDetails?.exists),
       isFallback,
       isLoading,
+      isReady,
       refresh,
     };
-  }, [address, details, fallbackBalanceXlm, isLoading, refresh]);
+  }, [address, details, fallbackBalanceXlm, isLoading, loadedAddress, refresh]);
 }

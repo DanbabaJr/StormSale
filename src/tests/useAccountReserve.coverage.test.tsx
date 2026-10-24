@@ -1,6 +1,6 @@
 // @vitest-environment happy-dom
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { act } from "react";
+import { act, useEffect } from "react";
 import { createRoot, type Root } from "react-dom/client";
 
 const stellarMocks = vi.hoisted(() => ({
@@ -35,8 +35,11 @@ const Harness = ({
   address: string | null;
   fallback?: string | number;
 }) => {
-  latest = useAccountReserve(address, fallback);
-  return <div>{latest.isLoading ? "loading" : "ready"}</div>;
+  const result = useAccountReserve(address, fallback);
+  useEffect(() => {
+    latest = result;
+  });
+  return <div>{result.isLoading ? "loading" : "ready"}</div>;
 };
 
 let container: HTMLDivElement;

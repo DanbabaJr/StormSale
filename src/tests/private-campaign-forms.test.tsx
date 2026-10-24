@@ -156,13 +156,21 @@ function fillCampaign({ budget = "100" } = {}) {
   fireEvent.click(screen.getByRole("button", { name: "24 Hours" }));
 }
 
-const submitCampaign = () =>
+// The reserve-aware submit guard waits for the account reserve lookup to settle,
+// which the Max control signals by becoming enabled.
+const submitCampaign = async () => {
+  if (web3.isConnected) {
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "Max" }).hasAttribute("disabled")).toBe(false),
+    );
+  }
   fireEvent.submit(screen.getByPlaceholderText("e.g., Summer Sale 2024").closest("form")!);
+};
 
 describe("CreateCampaignForm", () => {
   it("reports validation errors without touching the chain", async () => {
     render(<CreateCampaignForm />);
-    submitCampaign();
+    await submitCampaign();
     await waitFor(() => expect(titles()).toContain("Validation Error"));
     expect(web3.createCampaignOnChain).not.toHaveBeenCalled();
   });
@@ -171,7 +179,7 @@ describe("CreateCampaignForm", () => {
     Object.assign(web3, { isConnected: false, userAddress: null });
     render(<CreateCampaignForm />);
     fillCampaign();
-    submitCampaign();
+    await submitCampaign();
     await waitFor(() => expect(titles()).toContain("Wallet Not Connected"));
   });
 
@@ -182,7 +190,7 @@ describe("CreateCampaignForm", () => {
     fireEvent.click(toggle);
     expect(toggle.getAttribute("aria-checked")).toBe("true");
 
-    submitCampaign();
+    await submitCampaign();
     await waitFor(() => expect(titles()).toContain("Private Campaign Live on Stellar!"));
     expect(web3.approveTokenAllowance).toHaveBeenCalledWith(100, undefined, "XLM");
     expect(web3.createCampaignOnChain).toHaveBeenCalledWith("Launch Week", 100, 10, 86400, "XLM");
@@ -198,7 +206,7 @@ describe("CreateCampaignForm", () => {
   it("records a public campaign when the toggle is left off", async () => {
     render(<CreateCampaignForm />);
     fillCampaign();
-    submitCampaign();
+    await submitCampaign();
     await waitFor(() => expect(titles()).toContain("Campaign Escrow Live on Stellar!"));
     expect(getCampaignPolicy(7)).toMatchObject({ visibility: "public" });
   });
@@ -213,7 +221,7 @@ describe("CreateCampaignForm", () => {
     render(<CreateCampaignForm />);
     fillCampaign();
     fireEvent.click(screen.getByRole("switch"));
-    submitCampaign();
+    await submitCampaign();
 
     await waitFor(() => expect(titles()).toContain("Campaign Created — Access Setting Not Saved"));
     expect(titles()).toContain("Campaign Escrow Live on Stellar!");
@@ -226,7 +234,7 @@ describe("CreateCampaignForm", () => {
     web3.approveTokenAllowance.mockRejectedValue(new Error("user declined"));
     render(<CreateCampaignForm />);
     fillCampaign();
-    submitCampaign();
+    await submitCampaign();
     await waitFor(() => expect(titles()).toContain("Step 1 Failed (Approval)"));
     expect(web3.createCampaignOnChain).not.toHaveBeenCalled();
   });
@@ -236,7 +244,7 @@ describe("CreateCampaignForm", () => {
     web3.createCampaignOnChain.mockRejectedValue(new Error("simulation failed"));
     render(<CreateCampaignForm />);
     fillCampaign();
-    submitCampaign();
+    await submitCampaign();
     await waitFor(() => expect(titles()).toContain("Failed to Create Campaign"));
     expect(getCampaignPolicy(7)).toBeNull();
   });
@@ -247,7 +255,7 @@ describe("CreateCampaignForm", () => {
     await waitFor(() => expect(web3.refreshTokenAllowance).toHaveBeenCalled());
     fillCampaign();
     await screen.findByText(/Escrow Ready/);
-    submitCampaign();
+    await submitCampaign();
     await waitFor(() => expect(titles()).toContain("Campaign Escrow Live on Stellar!"));
     expect(web3.approveTokenAllowance).not.toHaveBeenCalled();
   });

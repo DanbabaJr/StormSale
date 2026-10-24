@@ -2,7 +2,7 @@ import { useState, useEffect } from "react";
 import { Button } from "../../components/ui/button";
 import { Input } from "../../components/ui/input";
 import { InputField } from "../../components/ui/input-group";
-import { TerminologyTooltip } from "../../components/ui/tooltip";
+import { InfoTooltip, TerminologyTooltip } from "../../components/ui/tooltip";
 import {
   Card,
   CardContent,
@@ -13,11 +13,6 @@ import {
 import { useWeb3 } from "../../hooks/useWeb3";
 import { useAccountReserve } from "../../hooks/useAccountReserve";
 import { useNotification } from "../../context/NotificationContext";
-<<<<<<< ours
-<<<<<<< ours
-=======
-import { InfoTooltip } from "../ui/tooltip";
->>>>>>> theirs
 import { getCreateCampaignSchema, getFieldErrors } from "../../lib/validation";
 import { CONTRACT_ADDRESSES } from "../../config/contracts";
 import { formatStellarAddress } from "../../lib/stellar";
@@ -34,27 +29,39 @@ import {
   ArrowRight,
   RefreshCw,
   Lock,
-<<<<<<< ours
   Globe,
-=======
   TriangleAlert,
   Wallet,
->>>>>>> theirs
 } from "lucide-react";
 import { setCampaignVisibility } from "../../lib/campaignAccess";
 import { SUPPORTED_ESCROW_ASSETS } from "../../config/stellar";
 import type { SupportedEscrowAssetCode } from "../../config/stellar";
 
-const formatXlm = (value: number): string => value.toFixed(7).replace(/\.?0+$/, "") || "0";
+const STROOPS_PER_XLM_DIGITS = 7;
+
+const formatXlm = (value: number): string =>
+  value.toFixed(STROOPS_PER_XLM_DIGITS).replace(/\.?0+$/, "") || "0";
+
+/**
+ * Converts a decimal XLM amount to integer stroops (1 XLM = 10^7 stroops)
+ * without floating point drift. Extra fractional digits are truncated.
+ */
+export const toStroops = (value: string | number): bigint => {
+  const raw =
+    typeof value === "number"
+      ? Number.isFinite(value)
+        ? value.toFixed(STROOPS_PER_XLM_DIGITS)
+        : "0"
+      : value.trim();
+  const match = /^(\d*)(?:\.(\d*))?$/.exec(raw);
+  if (!match) return 0n;
+  const whole = match[1] || "0";
+  const frac = (match[2] ?? "").slice(0, STROOPS_PER_XLM_DIGITS).padEnd(STROOPS_PER_XLM_DIGITS, "0");
+  return BigInt(whole) * 10n ** BigInt(STROOPS_PER_XLM_DIGITS) + BigInt(frac);
+};
 
 export type FlowStep =
   "idle" | "checking" | "approving" | "approved" | "creating" | "success" | "error";
-=======
-import { InfoTooltip } from "../ui/tooltip";
-import { Zap, Target, Clock, DollarSign, TriangleAlert, Wallet } from "lucide-react";
-
-const formatXlm = (value: number): string => value.toFixed(7).replace(/\.?0+$/, "");
->>>>>>> theirs
 
 export const CreateCampaignForm = () => {
   const [selectedAsset, setSelectedAsset] = useState<SupportedEscrowAssetCode>("XLM");
@@ -79,7 +86,6 @@ export const CreateCampaignForm = () => {
     EURC: 0,
   });
 
-<<<<<<< ours
   const {
     createCampaignOnChain,
     isConnected,
@@ -118,16 +124,26 @@ export const CreateCampaignForm = () => {
     subentries,
     baseReserveXlm,
     isLoading: isReserveLoading,
+    isReady: isReserveReady,
     isFallback,
   } = useAccountReserve(userAddress, xlmBalance);
 
   // The minimum reserve only constrains XLM escrow deposits; USDC/EURC budgets
   // do not spend the native balance.
+  const isXlmBudget = selectedAsset === "XLM";
+  // Until the reserve lookup for this address settles, spendable XLM is unknown.
+  const isReservePending = isXlmBudget && isConnected && !isReserveReady;
+  // Compare as integer stroops so a budget even one stroop over the limit is rejected.
   const exceedsSpendable =
-    selectedAsset === "XLM" && isConnected && isValidBudget && budgetNum > spendableXlm + 1e-7;
+    isXlmBudget &&
+    isConnected &&
+    isReserveReady &&
+    isValidBudget &&
+    toStroops(budget) > toStroops(spendableXlm);
+  const isReserveBlocked = isReservePending || exceedsSpendable;
 
   const handleMaxBudget = () => {
-    if (spendableXlm <= 0) {
+    if (!isReserveReady || spendableXlm <= 0) {
       setBudget("");
       return;
     }
@@ -160,34 +176,6 @@ export const CreateCampaignForm = () => {
 
   // Step 1: Approve Token Allowance Only
   const handleApproveAllowanceOnly = async () => {
-=======
-  const { createCampaignOnChain, isConnected, userAddress, xlmBalance } = useWeb3();
-  const {
-    spendableXlm,
-    reserveXlm,
-    balanceXlm,
-    subentries,
-    baseReserveXlm,
-    isLoading: isReserveLoading,
-    isFallback,
-  } = useAccountReserve(userAddress, xlmBalance);
-  const { showNotification } = useNotification();
-
-  const parsedBudget = parseFloat(budget);
-  const hasBudget = Number.isFinite(parsedBudget) && parsedBudget > 0;
-  const exceedsSpendable = isConnected && hasBudget && parsedBudget > spendableXlm + 1e-7;
-
-  const handleMaxBudget = () => {
-    if (spendableXlm <= 0) {
-      setBudget("");
-      return;
-    }
-    setBudget(formatXlm(spendableXlm));
-  };
-
-  const handleCreateCampaign = async (e: React.FormEvent) => {
-    e.preventDefault();
->>>>>>> theirs
     if (!isConnected) {
       showNotification({
         type: "error",
@@ -197,7 +185,6 @@ export const CreateCampaignForm = () => {
       return;
     }
 
-<<<<<<< ours
     if (!isValidBudget) {
       showNotification({
         type: "error",
@@ -206,23 +193,11 @@ export const CreateCampaignForm = () => {
           fracDigits > maxDecimals
             ? `Budget for ${selectedAsset} supports at most ${maxDecimals} decimal places.`
             : "Please enter a valid positive budget amount.",
-=======
-    // Enforce Stellar minimum reserve: escrow can only draw from spendable balance.
-    if (exceedsSpendable) {
-      showNotification({
-        type: "error",
-        title: "Insufficient Spendable Balance",
-        message: `Budget exceeds your spendable balance of ${formatXlm(spendableXlm)} XLM. ${formatXlm(reserveXlm)} XLM is locked by the Stellar minimum reserve.`,
->>>>>>> theirs
       });
       return;
     }
 
-<<<<<<< ours
     setFlowStep("approving");
-=======
-    setIsLoading(true);
->>>>>>> theirs
     try {
       showNotification({
         type: "info",
@@ -284,9 +259,16 @@ export const CreateCampaignForm = () => {
       return;
     }
 
-<<<<<<< ours
-=======
     // Enforce the Stellar minimum reserve: escrow can only draw from spendable balance.
+    if (isReservePending) {
+      showNotification({
+        type: "info",
+        title: "Checking Balance",
+        message: "Still loading your account reserve. Please try again in a moment.",
+      });
+      return;
+    }
+
     if (exceedsSpendable) {
       showNotification({
         type: "error",
@@ -296,7 +278,6 @@ export const CreateCampaignForm = () => {
       return;
     }
 
->>>>>>> theirs
     // Step 1: If allowance is insufficient, execute approval first
     if (!isAllowanceSufficient) {
       setFlowStep("approving");
@@ -599,10 +580,6 @@ export const CreateCampaignForm = () => {
                   error={errors.budget}
                   required
                 >
-<<<<<<< ours
-<<<<<<< ours
-=======
->>>>>>> theirs
                   <div className="space-y-1.5">
                     <div className="relative">
                       <Input
@@ -617,52 +594,18 @@ export const CreateCampaignForm = () => {
                           }
                         }}
                         placeholder="e.g., 1000"
-<<<<<<< ours
-                        variant={errors.budget ? "error" : "default"}
-                        className="h-12 border-slate-200 dark:border-zinc-800 focus:ring-indigo-600 dark:focus:ring-indigo-500 rounded-xl bg-slate-50 dark:bg-zinc-950"
-                        required
-                      />
-                      <div className="absolute right-4 top-1/2 transform -translate-y-1/2 text-zinc-400 font-bold uppercase text-xs">
-                        {selectedAsset}
-                      </div>
-=======
-                  <div className="relative">
-                    <Input
-                      type="number"
-                      min="0"
-                      step="0.0000001"
-                      value={budget}
-                      onChange={(e) => setBudget(e.target.value)}
-                      placeholder="e.g., 10000"
-                      variant={exceedsSpendable ? "error" : "default"}
-                      className="h-12 pr-28 border-slate-200 dark:border-zinc-800 focus:ring-indigo-600 dark:focus:ring-indigo-500 rounded-xl bg-slate-50 dark:bg-zinc-950"
-                    />
-                    <div className="absolute right-3 top-1/2 -translate-y-1/2 flex items-center gap-2">
-                      <Button
-                        type="button"
-                        variant="outline"
-                        size="sm"
-                        onClick={handleMaxBudget}
-                        disabled={!isConnected || spendableXlm <= 0}
-                        className="h-8 rounded-lg px-3 text-xs font-bold border-slate-200 dark:border-zinc-700 text-indigo-600 dark:text-indigo-400 hover:bg-indigo-50 dark:hover:bg-indigo-500/10"
-                      >
-                        Max
-                      </Button>
-                      <span className="text-zinc-400 font-medium">XLM</span>
->>>>>>> theirs
-=======
-                        variant={exceedsSpendable ? "error" : errors.budget ? "error" : "default"}
+                        variant={exceedsSpendable || errors.budget ? "error" : "default"}
                         className="h-12 pr-28 border-slate-200 dark:border-zinc-800 focus:ring-indigo-600 dark:focus:ring-indigo-500 rounded-xl bg-slate-50 dark:bg-zinc-950"
                         required
                       />
                       <div className="absolute right-3 top-1/2 transform -translate-y-1/2 flex items-center gap-2">
-                        {selectedAsset === "XLM" && (
+                        {isXlmBudget && (
                           <Button
                             type="button"
                             variant="outline"
                             size="sm"
                             onClick={handleMaxBudget}
-                            disabled={!isConnected || spendableXlm <= 0}
+                            disabled={!isConnected || !isReserveReady || spendableXlm <= 0}
                             className="h-8 rounded-lg px-3 text-xs font-bold border-slate-200 dark:border-zinc-700 text-indigo-600 dark:text-indigo-400 hover:bg-indigo-50 dark:hover:bg-indigo-500/10"
                           >
                             Max
@@ -672,7 +615,6 @@ export const CreateCampaignForm = () => {
                           {selectedAsset}
                         </span>
                       </div>
->>>>>>> theirs
                     </div>
                     {budget &&
                       parseFloat(budget) > parseFloat(assetBalances?.[selectedAsset] || "0") && (
@@ -704,7 +646,7 @@ export const CreateCampaignForm = () => {
                   </div>
                   <InfoTooltip
                     label="Base reserve"
-                    text={`Stellar requires every account to keep a minimum reserve of 1 XLM (2 × ${formatXlm(baseReserveXlm)} XLM base reserve) plus ${formatXlm(baseReserveXlm)} XLM for each subentry — trustlines, open offers, data entries, and extra signers. Funds held by that reserve cannot be spent or escrowed.`}
+                    text={`Stellar accounts must hold a minimum reserve: two base reserves (2 × ${formatXlm(baseReserveXlm)} XLM) plus ${formatXlm(baseReserveXlm)} XLM for each subentry — trustlines, open offers, data entries, and extra signers. Sponsorships can raise or lower how much this account must hold. Reserved funds cannot be spent or escrowed.`}
                   />
                 </div>
 
@@ -749,7 +691,7 @@ export const CreateCampaignForm = () => {
                       </p>
                     )}
 
-                    {isFallback && (
+                    {isFallback && isReserveReady && (
                       <p className="text-xs font-medium text-zinc-500 dark:text-zinc-400">
                         Live reserve data is unavailable right now; using your wallet balance with
                         the default base reserve.
@@ -1076,10 +1018,6 @@ export const CreateCampaignForm = () => {
                 </div>
               </div>
 
-<<<<<<< ours
-<<<<<<< ours
-=======
->>>>>>> theirs
               {/* ACTION BUTTONS: Sequential 1-Click vs Step-by-Step */}
               <div className="space-y-3 pt-2">
                 {isMultiSigAccount && (
@@ -1104,24 +1042,15 @@ export const CreateCampaignForm = () => {
                   <div className="space-y-3">
                     <Button
                       type="submit"
-<<<<<<< ours
                       loading={isExecuting}
                       cooldown
-                      className="w-full h-14 bg-indigo-600 hover:bg-indigo-700 text-white text-base md:text-lg font-bold shadow-lg shadow-indigo-600/20 rounded-xl transition-all"
-=======
-                      disabled={isExecuting || exceedsSpendable}
+                      disabled={isReserveBlocked}
                       title={
                         exceedsSpendable
                           ? `Budget exceeds your spendable balance of ${formatXlm(spendableXlm)} XLM`
                           : undefined
                       }
                       className="w-full h-14 bg-indigo-600 hover:bg-indigo-700 text-white text-base md:text-lg font-bold shadow-lg shadow-indigo-600/20 rounded-xl transition-all disabled:opacity-50 disabled:cursor-not-allowed"
-<<<<<<< ours
->>>>>>> theirs
-=======
-                      loading={isExecuting}
-                      cooldown
->>>>>>> theirs
                     >
                       {flowStep === "approving" ? (
                         <div className="flex items-center space-x-3">
@@ -1158,49 +1087,19 @@ export const CreateCampaignForm = () => {
                         Approve Allowance Only
                       </Button>
                     </div>
-=======
-              <Button
-                type="submit"
-                disabled={isLoading || exceedsSpendable}
-                title={
-                  exceedsSpendable
-                    ? `Budget exceeds your spendable balance of ${formatXlm(spendableXlm)} XLM`
-                    : undefined
-                }
-                className="w-full h-14 bg-zinc-900 hover:bg-zinc-800 dark:bg-indigo-600 dark:hover:bg-indigo-500 text-white text-lg font-bold shadow-lg rounded-xl transition-all disabled:opacity-50 disabled:cursor-not-allowed"
-              >
-                {isLoading ? (
-                  <div className="flex items-center space-x-3">
-                    <div className="w-5 h-5 border-2 border-white/30 border-t-white rounded-full animate-spin" />
-                    <span>Creating Campaign...</span>
-                  </div>
-                ) : (
-                  <div className="flex items-center space-x-2">
-                    <Zap className="w-5 h-5" />
-                    <span>Launch Campaign</span>
->>>>>>> theirs
                   </div>
                 ) : (
                   <Button
                     type="submit"
-<<<<<<< ours
                     loading={isExecuting}
                     cooldown
-                    className="w-full h-14 bg-zinc-900 hover:bg-zinc-800 dark:bg-indigo-600 dark:hover:bg-indigo-500 text-white text-lg font-bold shadow-lg rounded-xl transition-all"
-=======
-                    disabled={isExecuting || exceedsSpendable}
+                    disabled={isReserveBlocked}
                     title={
                       exceedsSpendable
                         ? `Budget exceeds your spendable balance of ${formatXlm(spendableXlm)} XLM`
                         : undefined
                     }
                     className="w-full h-14 bg-zinc-900 hover:bg-zinc-800 dark:bg-indigo-600 dark:hover:bg-indigo-500 text-white text-lg font-bold shadow-lg rounded-xl transition-all disabled:opacity-50 disabled:cursor-not-allowed"
-<<<<<<< ours
->>>>>>> theirs
-=======
-                    loading={isExecuting}
-                    cooldown
->>>>>>> theirs
                   >
                     {flowStep === "creating" ? (
                       <div className="flex items-center space-x-3">
