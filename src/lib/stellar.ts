@@ -517,7 +517,7 @@ async function fetchWithTimeout<T>(
     return { response, body };
   } catch (error) {
     if (error instanceof Error && error.name === "AbortError") {
-      throw new Error(`Federation request timed out after ${timeoutMs} ms`);
+      throw new Error(`Federation request timed out after ${timeoutMs} ms`, { cause: error });
     }
     throw error;
   } finally {
@@ -572,6 +572,10 @@ export async function resolveFederatedAddress(
     url = new URL(serverUrl);
   } catch {
     throw new Error(`Invalid federation server URL: ${serverUrl}`);
+  }
+  // SEP-0002 requires HTTPS; FEDERATION_SERVER comes from an untrusted stellar.toml.
+  if (url.protocol !== "https:") {
+    throw new Error(`Federation server must use HTTPS: ${serverUrl}`);
   }
   url.search = "";
   url.searchParams.set("q", `${parsed.username}*${parsed.domain}`);

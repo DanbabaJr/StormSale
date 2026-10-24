@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { Button } from "../../components/ui/button";
 import { Input } from "../../components/ui/input";
-import { InputGroup, InputField } from "../../components/input-group";
+import { InputGroup, InputField } from "../../components/ui/input-group";
 import {
   Card,
   CardContent,
@@ -14,13 +14,12 @@ import { useNotification } from "../../context/NotificationContext";
 import { wrapAESKey, getPublicKeyForAddress } from "../../lib/crypto";
 import { grantAccessSchema, getFieldErrors } from "../../lib/validation";
 import { resolveRecipient } from "../../lib/stellar";
-import type { RecipientResolution } from "../../lib/stellar";
+import { FederatedAddressInput } from "../shared/FederatedAddressInput";
 import { Eye, Shield, UserCheck } from "lucide-react";
 
 export const GrantAccessForm = () => {
   const [saleId, setSaleId] = useState("");
   const [auditorAddress, setAuditorAddress] = useState("");
-  const [auditorResolution, setAuditorResolution] = useState<RecipientResolution | null>(null);
   const [campaignAddress, setCampaignAddress] = useState("");
   const [isLoading, setIsLoading] = useState(false);
   const [errors, setErrors] = useState<Record<string, string>>({});
@@ -28,8 +27,7 @@ export const GrantAccessForm = () => {
   const { getCampaignContract } = useWeb3();
   const { showNotification } = useNotification();
 
-  const clearError = (field: string) =>
-    setErrors((prev) => ({ ...prev, [field]: "" }));
+  const clearError = (field: string) => setErrors((prev) => ({ ...prev, [field]: "" }));
 
   const handleGrantAccess = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -43,23 +41,23 @@ export const GrantAccessForm = () => {
     }
 
     const { data } = result;
-
-    // Never grant access from an unresolved federation string: resolve on demand
-    // if the field is still mid-lookup, otherwise use the cached resolution.
-    const resolution = auditorResolution ?? (await resolveRecipient(auditorAddress));
-    if (!resolution.address || (resolution.status !== "raw" && resolution.status !== "federated")) {
-      showNotification({
-        type: "warning",
-        title: "Auditor Not Verified",
-        message:
-          resolution.error || "Resolve the auditor address or paste their raw G... public key.",
-      });
-      return;
-    }
-    const recipientAddress = resolution.address;
-
     setIsLoading(true);
     try {
+      // Always re-resolve the submitted value so a stale or unresolved
+      // federation string can never reach the contract call.
+      const resolution = await resolveRecipient(data.auditorAddress);
+      const recipientAddress =
+        resolution.status === "raw" || resolution.status === "federated"
+          ? resolution.address
+          : undefined;
+      if (!recipientAddress) {
+        const message =
+          resolution.error || "Could not resolve the auditor address to a Stellar public key.";
+        setErrors({ auditorAddress: message });
+        showNotification({ type: "error", title: "Auditor Not Verified", message });
+        return;
+      }
+
       const campaignContract = getCampaignContract(data.campaignAddress);
 
       showNotification({
@@ -93,7 +91,6 @@ export const GrantAccessForm = () => {
 
       setSaleId("");
       setAuditorAddress("");
-      setAuditorResolution(null);
       setCampaignAddress("");
     } catch (error: any) {
       console.error("Error granting audit access:", error);
@@ -179,7 +176,7 @@ export const GrantAccessForm = () => {
 
                 <InputField
                   label="Auditor Address"
-                  description="Public key or federation address (e.g. auditor*stormsale.io)"
+                  description="Stellar public key (G…) or federation address (name*domain.com)"
                   error={errors.auditorAddress}
                   required
                 >
@@ -189,10 +186,8 @@ export const GrantAccessForm = () => {
                       setAuditorAddress(value);
                       clearError("auditorAddress");
                     }}
-                    onResolved={setAuditorResolution}
                     placeholder="GAUDITOR... or auditor*stormsale.io"
-                    required
-                    inputClassName="h-12 border-slate-200 dark:border-zinc-800 focus:ring-indigo-600 dark:focus:ring-indigo-500 rounded-xl bg-slate-50 dark:bg-zinc-950 font-mono"
+                    inputClassName="h-12 border-slate-200 dark:border-zinc-800 focus:ring-indigo-600 dark:focus:ring-indigo-500 rounded-xl bg-slate-50 dark:bg-zinc-950"
                   />
                 </InputField>
               </div>

@@ -1,8 +1,7 @@
 import { useState } from "react";
 import { Button } from "../../components/ui/button";
 import { Input } from "../../components/ui/input";
-import { InputGroup, InputField } from "../../components/input-group";
-import { FederatedAddressInput } from "../shared/FederatedAddressInput";
+import { InputGroup, InputField } from "../../components/ui/input-group";
 import {
   Card,
   CardContent,
@@ -18,15 +17,15 @@ import {
   wrapAESKey,
   getPublicKeyForAddress,
 } from "../../lib/crypto";
-import { resolveRecipient } from "../../lib/stellar";
-import type { RecipientResolution } from "../../lib/stellar";
 import { logSaleSchema, getFieldErrors } from "../../lib/validation";
 import { dispatchWebhookEvent, triggerConversionPostback } from "../../lib/webhookEngine";
+import { getAffiliateAccess } from "../../lib/campaignAccess";
+import { resolveRecipient } from "../../lib/stellar";
+import { FederatedAddressInput } from "../shared/FederatedAddressInput";
 import { Shield, Zap, Users, FileKey } from "lucide-react";
 
 export const LogSaleForm = () => {
   const [affiliateAddress, setAffiliateAddress] = useState("");
-  const [affiliateResolution, setAffiliateResolution] = useState<RecipientResolution | null>(null);
   const [saleAmount, setSaleAmount] = useState("");
   const [campaignAddress, setCampaignAddress] = useState("");
   const [customerData, setCustomerData] = useState("");
@@ -65,38 +64,49 @@ export const LogSaleForm = () => {
       return;
     }
 
-    // Never submit an unresolved federation string: resolve on demand if the
-    // field is still mid-lookup, otherwise use the cached resolution.
-    const resolution = affiliateResolution ?? (await resolveRecipient(affiliateAddress));
-    if (!resolution.address || (resolution.status !== "raw" && resolution.status !== "federated")) {
-      showNotification({
-        type: "warning",
-        title: "Recipient Not Verified",
-        message:
-          resolution.error || "Resolve the affiliate address or paste their raw G... public key.",
+    const { data } = result;
+
+    // Always re-resolve the submitted recipient so a stale or unresolved
+    // federation string can never reach the contract call.
+    setIsLoading(true);
+    let recipientAddress: string | undefined;
+    try {
+      const resolution = await resolveRecipient(data.affiliateAddress);
+      recipientAddress =
+        resolution.status === "raw" || resolution.status === "federated"
+          ? resolution.address
+          : undefined;
+      if (!recipientAddress) {
+        const message =
+          resolution.error || "Could not resolve the affiliate address to a Stellar public key.";
+        setErrors({ affiliateAddress: message });
+        showNotification({ type: "error", title: "Recipient Not Verified", message });
+        setIsLoading(false);
+        return;
+      }
+    } catch (error: unknown) {
+      setIsLoading(false);
+      setErrors({
+        affiliateAddress: error instanceof Error ? error.message : "Federation lookup failed.",
       });
       return;
     }
-    const recipientAddress = resolution.address;
-
-    const { data } = result;
 
     // Private campaigns only credit approved affiliates. Checked before any
     // encryption work so the advertiser sees why. The id is already validated
     // as a u32 by the schema, so this cannot throw on an out-of-range value.
     if (/^\d+$/.test(data.campaignAddress)) {
-      const access = getAffiliateAccess(data.campaignAddress, data.affiliateAddress);
+      const access = getAffiliateAccess(data.campaignAddress, recipientAddress);
       if (!access.allowed) {
         showNotification({
           type: "error",
           title: "Affiliate Not Approved",
           message: access.reason,
         });
+        setIsLoading(false);
         return;
       }
     }
-
-    setIsLoading(true);
 
     try {
       const campaignContract = getCampaignContract(data.campaignAddress);
@@ -116,6 +126,7 @@ export const LogSaleForm = () => {
         timestamp: new Date().toISOString(),
         metadata: "Additional sale information",
       };
+
       const encryptedPayload = await encryptPayload(payload, aesKey);
 
       const advertiserPublicKey = await getPublicKeyForAddress(userAddress);
@@ -130,39 +141,86 @@ export const LogSaleForm = () => {
         message: "Logging encrypted sale...",
       });
 
-      const tx = await campaignContract.logSale(
+      const tx = await campaignContract.logEncryptedSale(
+        recipientAddress,
+        data.saleAmount,
+        encryptedPayload,
         advertiserWrappedKey,
         affiliateWrappedKey,
-        encryptedPayload,
       );
 
-      await tx.wait();
+      const waitResult = await tx.wait();
 
-      await triggerConversionPostback(data.campaignAddress, recipientAddress, data.saleAmount);
-      await dispatchWebhookEvent("conversion", {
-        campaign: data.campaignAddress,
-        affiliate: recipientAddress,
-        amount: data.saleAmount,
-        timestamp: new Date().toISOString(),
-      });
+      const postbackTxHash =
+        waitResult?.txHash || tx?.hash || tx?.id || "PENDING_CONFIRMED_LEDGER_TX";
+      const createdAt = new Date().toISOString();
+
+      const conversionPayload = {
+        id: payload.saleId,
+        event: "conversion.created",
+        created_at: createdAt,
+        conversion_id: payload.saleId,
+        campaign_id: data.campaignAddress,
+        campaign_address: data.campaignAddress,
+        affiliate_address: recipientAddress,
+        advertiser_address: userAddress || "GADVERTISER_DEFAULT_TESTNET",
+        amount: Number(data.saleAmount),
+        currency: "XLM",
+        tx_hash: postbackTxHash,
+        status: "confirmed",
+      };
+      void dispatchWebhookEvent("conversion.created", conversionPayload);
+
+      try {
+        const postbacks = await triggerConversionPostback({
+          saleId: payload.saleId,
+          campaignAddress: data.campaignAddress,
+          affiliateAddress: recipientAddress,
+          advertiserAddress: userAddress || "GADVERTISER_DEFAULT_TESTNET",
+          saleAmount: data.saleAmount,
+          currency: "XLM",
+          stellarTxHash: postbackTxHash,
+          ledgerTimestamp: createdAt,
+          customerRef: data.customerData ? `REF_${payload.saleId.slice(-8)}` : "Anonymous Customer",
+          status: "CONFIRMED_ON_LEDGER",
+        });
+
+        if (postbacks.length > 0) {
+          showNotification({
+            type: "info",
+            title: "Webhooks Dispatched",
+            message: `Automated postback queued for ${postbacks.length} active endpoint(s).`,
+          });
+        }
+      } catch (webhookErr) {
+        console.warn("Conversion postback warning:", webhookErr);
+
+        showNotification({
+          type: "warning",
+          title: "Postback Notice",
+          message:
+            "Sale confirmed on-chain, but automated webhook dispatch encountered an issue. You can review or retry from the Webhook Manager tab.",
+        });
+      }
 
       showNotification({
         type: "success",
-        title: "Sale Logged",
-        message: "Encrypted sale recorded on-chain",
+        title: "Sale Logged Successfully!",
+        message: "Encrypted sale data has been recorded on-chain.",
       });
 
       setAffiliateAddress("");
-      setAffiliateResolution(null);
       setSaleAmount("");
       setCampaignAddress("");
       setCustomerData("");
-    } catch (error: any) {
+      setErrors({});
+    } catch (error: unknown) {
       console.error("Error logging sale:", error);
+
       showNotification({
         type: "error",
-        title: "Sale Log Failed",
-        message: error.message || "Failed to log sale",
+        title: "Logging Failed",
+        message: error instanceof Error ? error.message : "Failed to log sale.",
       });
     } finally {
       setIsLoading(false);
@@ -173,10 +231,10 @@ export const LogSaleForm = () => {
     <div className="space-y-6">
       <div>
         <h2 className="text-3xl font-extrabold text-zinc-900 dark:text-white tracking-tight">
-          Log a Sale
+          Log Encrypted Sale
         </h2>
         <p className="text-zinc-500 dark:text-zinc-400 mt-2 font-medium">
-          Record a converted sale against your campaign and affiliate.
+          Record a new sale with military-grade encryption and commission escrow
         </p>
       </div>
 
@@ -184,14 +242,14 @@ export const LogSaleForm = () => {
         <CardHeader className="pb-6 pt-8 px-8">
           <div className="flex items-center space-x-4">
             <div className="w-14 h-14 bg-zinc-900 dark:bg-indigo-600 rounded-xl flex items-center justify-center shadow-md">
-              <Zap className="w-7 h-7 text-white" />
+              <Shield className="w-7 h-7 text-white" />
             </div>
             <div>
               <CardTitle className="text-2xl font-bold text-zinc-900 dark:text-white">
-                Conversion Tracking
+                Secure Sale Logging
               </CardTitle>
               <CardDescription className="text-zinc-500 dark:text-zinc-400 mt-1">
-                Log affiliate-sourced sales and distribute escrowed payouts.
+                All data is encrypted before being stored on-chain
               </CardDescription>
             </div>
           </div>
@@ -202,7 +260,7 @@ export const LogSaleForm = () => {
             <InputGroup className="space-y-8">
               <InputField
                 label="Campaign Address"
-                description="Soroban contract address (C…) containing the sale"
+                description="Soroban contract address (C…) for this campaign"
                 error={errors.campaignAddress}
                 required
               >
@@ -212,7 +270,7 @@ export const LogSaleForm = () => {
                     setCampaignAddress(e.target.value);
                     clearError("campaignAddress");
                   }}
-                  placeholder="CCAMPAIGN... (56-char Soroban Contract Address)"
+                  placeholder="Campaign ID (e.g. 1) or CCAMPAIGN... contract address"
                   variant={errors.campaignAddress ? "error" : "default"}
                   className="h-12 border-slate-200 dark:border-zinc-800 focus:ring-indigo-600 dark:focus:ring-indigo-500 rounded-xl bg-slate-50 dark:bg-zinc-950 font-mono"
                 />
@@ -221,7 +279,7 @@ export const LogSaleForm = () => {
               <div className="grid md:grid-cols-2 gap-6">
                 <InputField
                   label="Affiliate Address"
-                  description="Public key or federation address (e.g. affiliate*stormsale.io)"
+                  description="Stellar public key (G…) or federation address (name*domain.com)"
                   error={errors.affiliateAddress}
                   required
                 >
@@ -231,38 +289,41 @@ export const LogSaleForm = () => {
                       setAffiliateAddress(value);
                       clearError("affiliateAddress");
                     }}
-                    onResolved={setAffiliateResolution}
-                    placeholder="GAFFILIATE... or affiliate*stormsale.io"
-                    required
-                    inputClassName="h-12 border-slate-200 dark:border-zinc-800 focus:ring-indigo-600 dark:focus:ring-indigo-500 rounded-xl bg-slate-50 dark:bg-zinc-950 font-mono"
+                    placeholder="GAFFILIATE... or alice*stormsale.io"
+                    inputClassName="h-12 border-slate-200 dark:border-zinc-800 focus:ring-indigo-600 dark:focus:ring-indigo-500 rounded-xl bg-slate-50 dark:bg-zinc-950"
                   />
                 </InputField>
 
                 <InputField
-                  label="Sale Amount"
-                  description="Amount paid out to the affiliate from the campaign escrow"
+                  label="Sale Amount (XLM)"
+                  description="Total sale amount in XLM (up to 7 decimal places)"
                   error={errors.saleAmount}
                   required
                 >
-                  <Input
-                    type="number"
-                    min="0"
-                    step="0.01"
-                    value={saleAmount}
-                    onChange={(e) => {
-                      setSaleAmount(e.target.value);
-                      clearError("saleAmount");
-                    }}
-                    placeholder="e.g., 100.50"
-                    variant={errors.saleAmount ? "error" : "default"}
-                    className="h-12 border-slate-200 dark:border-zinc-800 focus:ring-indigo-600 dark:focus:ring-indigo-500 rounded-xl bg-slate-50 dark:bg-zinc-950"
-                  />
+                  <div className="relative">
+                    <Input
+                      type="number"
+                      step="0.0000001"
+                      min="0"
+                      value={saleAmount}
+                      onChange={(e) => {
+                        setSaleAmount(e.target.value);
+                        clearError("saleAmount");
+                      }}
+                      placeholder="e.g., 100.50"
+                      variant={errors.saleAmount ? "error" : "default"}
+                      className="h-12 border-slate-200 dark:border-zinc-800 focus:ring-indigo-600 dark:focus:ring-indigo-500 rounded-xl bg-slate-50 dark:bg-zinc-950"
+                    />
+                    <div className="absolute right-4 top-1/2 transform -translate-y-1/2 text-zinc-400 font-medium">
+                      XLM
+                    </div>
+                  </div>
                 </InputField>
               </div>
 
               <InputField
-                label="Customer Data"
-                description="Encrypted customer information tied to the sale"
+                label="Customer Information"
+                description="Optional customer data (will be encrypted) — max 256 characters"
                 error={errors.customerData}
               >
                 <Input
@@ -271,25 +332,39 @@ export const LogSaleForm = () => {
                     setCustomerData(e.target.value);
                     clearError("customerData");
                   }}
-                  placeholder="Optional customer details"
+                  placeholder="Customer name, email, or reference ID"
                   variant={errors.customerData ? "error" : "default"}
                   className="h-12 border-slate-200 dark:border-zinc-800 focus:ring-indigo-600 dark:focus:ring-indigo-500 rounded-xl bg-slate-50 dark:bg-zinc-950"
                 />
               </InputField>
 
-              {/* Security Notice */}
-              <div className="bg-indigo-50 dark:bg-indigo-500/10 p-6 rounded-2xl border border-indigo-100 dark:border-indigo-500/20">
-                <div className="flex items-start space-x-4">
-                  <Shield className="w-6 h-6 text-indigo-600 dark:text-indigo-400 mt-1" />
-                  <div>
-                    <h4 className="font-bold text-indigo-900 dark:text-indigo-300">
-                      Encryption Notice
-                    </h4>
-                    <p className="text-sm font-medium text-indigo-700 dark:text-indigo-400 mt-2 leading-relaxed">
-                      Sale data is encrypted client-side and stored on-chain only in wrapped form.
-                      Only the advertiser and the authorized affiliate can decrypt it.
-                    </p>
-                  </div>
+              <div className="bg-slate-50 dark:bg-zinc-950/50 p-6 rounded-2xl border border-slate-100 dark:border-zinc-800/50">
+                <h4 className="font-bold text-zinc-900 dark:text-white uppercase tracking-wider text-xs mb-6 flex items-center">
+                  <FileKey className="w-4 h-4 mr-2 text-indigo-500" />
+                  Encryption Security Flow
+                </h4>
+                <div className="grid grid-cols-2 md:grid-cols-5 gap-6 text-center">
+                  {[
+                    { step: "1", label: "Generate AES Key", icon: Zap },
+                    { step: "2", label: "Encrypt Data", icon: Shield },
+                    { step: "3", label: "Get Public Keys", icon: Users },
+                    { step: "4", label: "Wrap Keys", icon: FileKey },
+                    { step: "5", label: "Store On-Chain", icon: Shield },
+                  ].map((item) => {
+                    const IconComponent = item.icon;
+
+                    return (
+                      <div key={item.step} className="flex flex-col items-center">
+                        <div className="w-10 h-10 bg-indigo-100 dark:bg-indigo-500/20 text-indigo-700 dark:text-indigo-400 rounded-full flex items-center justify-center text-sm font-bold mb-3 border border-indigo-200 dark:border-indigo-500/30">
+                          {item.step}
+                        </div>
+                        <IconComponent className="w-5 h-5 text-zinc-400 dark:text-zinc-500 mb-2" />
+                        <div className="text-xs font-semibold text-zinc-600 dark:text-zinc-400">
+                          {item.label}
+                        </div>
+                      </div>
+                    );
+                  })}
                 </div>
               </div>
 
@@ -302,12 +377,12 @@ export const LogSaleForm = () => {
                 {isLoading ? (
                   <div className="flex items-center space-x-3">
                     <div className="w-5 h-5 border-2 border-white/30 border-t-white rounded-full animate-spin" />
-                    <span>Logging Sale...</span>
+                    <span>Logging Encrypted Sale...</span>
                   </div>
                 ) : (
                   <div className="flex items-center space-x-2">
-                    <FileKey className="w-5 h-5" />
-                    <span>Log Sale</span>
+                    <Shield className="w-5 h-5" />
+                    <span>Log Encrypted Sale</span>
                   </div>
                 )}
               </Button>
