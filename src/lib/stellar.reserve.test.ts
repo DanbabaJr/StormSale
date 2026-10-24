@@ -76,7 +76,7 @@ describe("fetchStellarAccountDetails", () => {
       "fetch",
       vi.fn().mockResolvedValueOnce(
         jsonResponse({
-          subentries: 2,
+          subentry_count: 2,
           num_sponsoring: 0,
           num_sponsored: 0,
           balances: [
@@ -88,6 +88,7 @@ describe("fetchStellarAccountDetails", () => {
     );
 
     const details = await fetchStellarAccountDetails(VALID_PUBLIC_KEY);
+    expect(details.status).toBe("active");
     expect(details.exists).toBe(true);
     expect(details.balanceXlm).toBe(100);
     expect(details.subentries).toBe(2);
@@ -100,6 +101,7 @@ describe("fetchStellarAccountDetails", () => {
     vi.stubGlobal("fetch", vi.fn().mockResolvedValueOnce(jsonResponse({}, 404)));
 
     const details = await fetchStellarAccountDetails(VALID_PUBLIC_KEY);
+    expect(details.status).toBe("unfunded");
     expect(details.exists).toBe(false);
     expect(details.balanceXlm).toBe(0);
     expect(details.reserveXlm).toBe(1);
@@ -109,6 +111,7 @@ describe("fetchStellarAccountDetails", () => {
   it("degrades gracefully when Horizon is unreachable", async () => {
     vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new Error("offline")));
     const details = await fetchStellarAccountDetails(VALID_PUBLIC_KEY);
+    expect(details.status).toBe("unavailable");
     expect(details.exists).toBe(false);
     expect(details.spendableXlm).toBe(0);
   });

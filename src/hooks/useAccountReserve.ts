@@ -15,6 +15,13 @@ export interface AccountReserveState {
   exists: boolean;
   /** True when Horizon data was unavailable and the context balance was used. */
   isFallback: boolean;
+  /**
+   * True when Horizon could not be reached (as opposed to an unfunded account),
+   * so subentries are unknown and spendable XLM may be overstated.
+   */
+  isUnavailable: boolean;
+  /** Native XLM committed to open sell offers; excluded from spendable XLM. */
+  sellingLiabilitiesXlm: number;
   isLoading: boolean;
   /**
    * True once a Horizon lookup for the current address has settled. Callers
@@ -87,6 +94,7 @@ export function useAccountReserve(
         : {
             numSponsoring: activeDetails.numSponsoring,
             numSponsored: activeDetails.numSponsored,
+            sellingLiabilitiesXlm: activeDetails.sellingLiabilitiesXlm,
           },
     );
 
@@ -99,6 +107,8 @@ export function useAccountReserve(
       trustlineCount: isFallback ? 0 : activeDetails.trustlineCount,
       exists: Boolean(activeDetails?.exists),
       isFallback,
+      isUnavailable: activeDetails?.status === "unavailable",
+      sellingLiabilitiesXlm: breakdown.sellingLiabilitiesXlm ?? 0,
       isLoading,
       isReady,
       refresh,

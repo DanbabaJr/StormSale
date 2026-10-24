@@ -72,6 +72,8 @@ beforeEach(() => {
     numSponsoring: 0,
     numSponsored: 0,
     trustlineCount: 1,
+    sellingLiabilitiesXlm: 1.5,
+    status: "active",
   });
 });
 
@@ -99,6 +101,7 @@ describe("useAccountReserve coverage", () => {
     expect(stellarMocks.calculateReserveBreakdown).toHaveBeenCalledWith(20, 2, {
       numSponsoring: 0,
       numSponsored: 0,
+      sellingLiabilitiesXlm: 1.5,
     });
     expect(latest).toMatchObject({
       balanceXlm: 20,
@@ -108,8 +111,24 @@ describe("useAccountReserve coverage", () => {
       trustlineCount: 1,
       exists: true,
       isFallback: false,
+      isUnavailable: false,
       isLoading: false,
     });
+  });
+
+  it("flags unavailable Horizon data separately from an unfunded account", async () => {
+    stellarMocks.fetchStellarAccountDetails.mockResolvedValue({
+      address: ADDRESS,
+      status: "unavailable",
+      exists: false,
+      balanceXlm: 0,
+      subentries: 0,
+    });
+
+    await render(ADDRESS, "42.5");
+
+    expect(latest.isFallback).toBe(true);
+    expect(latest.isUnavailable).toBe(true);
   });
 
   it("falls back to the wallet balance when the account does not exist", async () => {
@@ -126,6 +145,7 @@ describe("useAccountReserve coverage", () => {
     expect(latest.isFallback).toBe(true);
     expect(latest.trustlineCount).toBe(0);
     expect(latest.exists).toBe(false);
+    expect(latest.isUnavailable).toBe(false);
   });
 
   it("refreshes on demand and toggles the loading flag", async () => {

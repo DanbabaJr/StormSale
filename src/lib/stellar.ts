@@ -311,13 +311,15 @@ export async function fetchAssetBalances(
     const usdc = balances.find(
       (b: any) =>
         b.asset_code === "USDC" &&
-        (!SUPPORTED_ESCROW_ASSETS.USDC.issuer || b.asset_issuer === SUPPORTED_ESCROW_ASSETS.USDC.issuer),
+        (!SUPPORTED_ESCROW_ASSETS.USDC.issuer ||
+          b.asset_issuer === SUPPORTED_ESCROW_ASSETS.USDC.issuer),
     );
 
     const eurc = balances.find(
       (b: any) =>
         b.asset_code === "EURC" &&
-        (!SUPPORTED_ESCROW_ASSETS.EURC.issuer || b.asset_issuer === SUPPORTED_ESCROW_ASSETS.EURC.issuer),
+        (!SUPPORTED_ESCROW_ASSETS.EURC.issuer ||
+          b.asset_issuer === SUPPORTED_ESCROW_ASSETS.EURC.issuer),
     );
 
     return {
@@ -435,6 +437,11 @@ export interface ReserveCalculationOptions {
   numSponsoring?: number;
   /** Number of this account's own reserves sponsored by another account. */
   numSponsored?: number;
+  /**
+   * Native XLM committed to open sell offers (Horizon `selling_liabilities`).
+   * It stays in the balance but cannot be spent until the offers are removed.
+   */
+  sellingLiabilitiesXlm?: number;
 }
 
 export interface ReserveBreakdown {
@@ -445,6 +452,7 @@ export interface ReserveBreakdown {
   spendableXlm: number;
   numSponsoring: number;
   numSponsored: number;
+  sellingLiabilitiesXlm: number;
 }
 
 /** Clamps arbitrary input to a non-negative integer. */
@@ -482,15 +490,18 @@ export function calculateReserveBreakdown(
   const balance = Number.isFinite(parsedBalance) ? parsedBalance : 0;
   const baseReserveXlm = options.baseReserveXlm ?? STELLAR_BASE_RESERVE_XLM;
   const reserveXlm = calculateAccountReserve(subentries, { ...options, baseReserveXlm });
+  const liabilities = Number(options.sellingLiabilitiesXlm);
+  const sellingLiabilitiesXlm = Number.isFinite(liabilities) && liabilities > 0 ? liabilities : 0;
 
   return {
     balanceXlm: balance,
     subentries: toCount(subentries),
     baseReserveXlm,
     reserveXlm,
-    spendableXlm: Math.max(0, balance - reserveXlm),
+    spendableXlm: Math.max(0, balance - reserveXlm - sellingLiabilitiesXlm),
     numSponsoring: toCount(options.numSponsoring),
     numSponsored: toCount(options.numSponsored),
+    sellingLiabilitiesXlm,
   };
 }
 
@@ -510,17 +521,29 @@ export function calculateSpendableBalance(
 interface HorizonAccountBalance {
   asset_type?: string;
   balance?: string;
+  selling_liabilities?: string;
 }
+
+/**
+ * Outcome of a Horizon account lookup:
+ * - `active`: the account was loaded and the figures are authoritative.
+ * - `unfunded`: Horizon returned 404, so the account does not exist on-chain yet.
+ * - `unavailable`: Horizon errored or was unreachable; the reserve is unknown.
+ */
+export type StellarAccountStatus = "active" | "unfunded" | "unavailable";
 
 /** Detailed Horizon account snapshot used for reserve-aware validation. */
 export interface StellarAccountDetails {
   address: string;
+  status: StellarAccountStatus;
   exists: boolean;
   balanceXlm: number;
   subentries: number;
   numSponsoring: number;
   numSponsored: number;
   trustlineCount: number;
+  /** Native XLM committed to open sell offers; not spendable. */
+  sellingLiabilitiesXlm: number;
   reserveXlm: number;
   spendableXlm: number;
 }
@@ -528,30 +551,33 @@ export interface StellarAccountDetails {
 /**
  * Fetches an account's native balance, subentry count, and sponsorship data from
  * Horizon so the UI can compute the locked reserve and spendable balance.
- * Returns a zeroed, non-existent snapshot when the account is unfunded or the
- * network is unreachable so callers can degrade gracefully.
+ * Returns a zeroed, non-existent snapshot when the account is unfunded (404,
+ * `status: "unfunded"`) or Horizon cannot be reached (`status: "unavailable"`),
+ * so callers can tell a genuinely empty account from unknown reserve data.
  */
 export async function fetchStellarAccountDetails(address: string): Promise<StellarAccountDetails> {
-  const empty: StellarAccountDetails = {
+  const empty = (status: StellarAccountStatus): StellarAccountDetails => ({
     address,
+    status,
     exists: false,
     balanceXlm: 0,
     subentries: 0,
     numSponsoring: 0,
     numSponsored: 0,
     trustlineCount: 0,
+    sellingLiabilitiesXlm: 0,
     reserveXlm: calculateAccountReserve(0),
     spendableXlm: 0,
-  };
+  });
 
   try {
     const response = await fetch(`${STELLAR_CONFIG.horizonUrl}/accounts/${address}`);
     if (!response.ok) {
-      return empty;
+      return empty(response.status === 404 ? "unfunded" : "unavailable");
     }
 
     const data = (await response.json()) as {
-      subentries?: number;
+      subentry_count?: number;
       num_sponsoring?: number;
       num_sponsored?: number;
       balances?: HorizonAccountBalance[];
@@ -559,7 +585,11 @@ export async function fetchStellarAccountDetails(address: string): Promise<Stell
     const balances = data.balances ?? [];
     const nativeBalance = balances.find((b) => b.asset_type === "native");
     const balanceXlm = nativeBalance?.balance ? parseFloat(nativeBalance.balance) : 0;
-    const subentries = Number(data.subentries) || 0;
+    const sellingLiabilitiesXlm = nativeBalance?.selling_liabilities
+      ? parseFloat(nativeBalance.selling_liabilities) || 0
+      : 0;
+    // Horizon reports the subentry total as `subentry_count`.
+    const subentries = Number(data.subentry_count) || 0;
     const numSponsoring = Number(data.num_sponsoring) || 0;
     const numSponsored = Number(data.num_sponsored) || 0;
     const trustlineCount = balances.filter((b) => b.asset_type !== "native").length;
@@ -567,18 +597,20 @@ export async function fetchStellarAccountDetails(address: string): Promise<Stell
 
     return {
       address,
+      status: "active",
       exists: true,
       balanceXlm,
       subentries,
       numSponsoring,
       numSponsored,
       trustlineCount,
+      sellingLiabilitiesXlm,
       reserveXlm,
-      spendableXlm: Math.max(0, balanceXlm - reserveXlm),
+      spendableXlm: Math.max(0, balanceXlm - reserveXlm - sellingLiabilitiesXlm),
     };
   } catch (error) {
     console.warn("Error fetching Horizon account details:", error);
-    return empty;
+    return empty("unavailable");
   }
 }
 
@@ -1065,7 +1097,9 @@ export async function claimPayoutContractCall(
   assetAddress?: string;
 }> {
   let resolvedAssetCode = assetCode;
-  let resolvedAssetAddress = assetCode ? SUPPORTED_ESCROW_ASSETS[assetCode]?.contractAddress : undefined;
+  let resolvedAssetAddress = assetCode
+    ? SUPPORTED_ESCROW_ASSETS[assetCode]?.contractAddress
+    : undefined;
 
   // When not explicitly provided by the caller, attempt to query the campaign's settlement asset from contract storage
   if (!resolvedAssetCode && !affiliateAddress.startsWith("GASTORMSALE7") && walletType !== "mock") {
@@ -1232,7 +1266,10 @@ export async function approveTokenContractCall(
     const mockHash =
       "0x" + Array.from({ length: 64 }, () => Math.floor(Math.random() * 16).toString(16)).join("");
     if (typeof window !== "undefined" && window.localStorage) {
-      window.localStorage.setItem(`mock_allowance_${ownerAddress}_${spenderAddress}`, amount.toString());
+      window.localStorage.setItem(
+        `mock_allowance_${ownerAddress}_${spenderAddress}`,
+        amount.toString(),
+      );
     }
     return {
       success: true,
@@ -1262,7 +1299,10 @@ export async function approveTokenContractCall(
   );
 
   if (typeof window !== "undefined" && window.localStorage) {
-    window.localStorage.setItem(`mock_allowance_${ownerAddress}_${spenderAddress}`, amount.toString());
+    window.localStorage.setItem(
+      `mock_allowance_${ownerAddress}_${spenderAddress}`,
+      amount.toString(),
+    );
   }
 
   return {
